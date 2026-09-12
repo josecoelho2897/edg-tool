@@ -439,6 +439,44 @@ const EDG_LOGO_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAfQAAAD
 /* ---------------- storage backend: Supabase (kv_store table) ---------------- */
 const SUPABASE_URL = "https://iozmufovriszyhqhwzqa.supabase.co";
 const SUPABASE_KEY = "sb_publishable_wBf87sTE6FH-6PnGKGFyAQ_aVWqj5H2";
+const ATTACHMENTS_BUCKET = "attachments";
+const MAX_ATTACHMENT_MB = 10;
+async function uploadAttachment(file){
+  if(file.size > MAX_ATTACHMENT_MB*1024*1024){
+    throw new Error(`El archivo supera el límite de ${MAX_ATTACHMENT_MB} MB.`);
+  }
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+  const path = `${Date.now()}_${Math.random().toString(36).slice(2,8)}_${safeName}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${ATTACHMENTS_BUCKET}/${encodeURIComponent(path)}`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': file.type || 'application/octet-stream'
+    },
+    body: file
+  });
+  if(!res.ok) throw new Error('No se pudo subir el archivo (HTTP '+res.status+'). ¿Ya creaste el bucket "attachments" en Supabase?');
+  return {
+    name: file.name,
+    url: `${SUPABASE_URL}/storage/v1/object/public/${ATTACHMENTS_BUCKET}/${encodeURIComponent(path)}`,
+    type: file.type || '',
+    size: file.size
+  };
+}
+function isImageAttachment(att){ return att && att.type && att.type.startsWith('image/'); }
+function formatFileSize(bytes){
+  if(bytes<1024) return bytes+' B';
+  if(bytes<1024*1024) return (bytes/1024).toFixed(1)+' KB';
+  return (bytes/(1024*1024)).toFixed(1)+' MB';
+}
+function renderAttachment(att){
+  if(!att) return '';
+  if(isImageAttachment(att)){
+    return `<a href="${att.url}" target="_blank" rel="noopener"><img src="${att.url}" alt="${esc(att.name)}" style="max-width:260px;max-height:220px;border-radius:8px;margin-top:6px;display:block;border:1px solid var(--border)"></a>`;
+  }
+  return `<a href="${att.url}" target="_blank" rel="noopener" class="attachment-chip">📎 ${esc(att.name)} <span style="color:var(--text-muted)">(${formatFileSize(att.size||0)})</span></a>`;
+}
 
 /* ---------------- email notifications (EmailJS) ---------------- */
 const EMAILJS_PUBLIC_KEY = "QZe8kSc6A8zZkW_u2";
@@ -726,6 +764,8 @@ let currentDMWith = null; // username of the other person, or null if viewing a 
 let dmCache = {}; // username -> messages array
 let calMonth = new Date(); calMonth.setDate(1);
 let chatSearch = "";
+let pendingAttachment = null;
+let attachmentUploading = false;
 let taskViewMode = "board"; // "board" | "list"
 let taskSort = {key:"due", dir:"asc"};
 let pollingStarted = false;
@@ -2143,7 +2183,7 @@ function renderDashboard(){
 }
 /* ================= ACTIVITY ================= */
 const ACTIVITY_LABELS = {
-  tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️', tarea_comentario:'💬',
+  tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️', tarea_comentario:'💬', campo_creado:'🧩',
   meta_creada:'🆕', meta_progreso:'📈', meta_eliminada:'🗑️',
   evento_creado:'🆕', evento_eliminado:'🗑️', evento_actualizado:'✏️',
   canal_creado:'🆕', mensaje_eliminado:'🗑️', canal_archivado:'📦',
@@ -2310,8 +2350,12 @@ function renderChat(isPoll){
     </div>
     <div class="composer">
       ${replyContext? `<div class="reply-banner"><span>Respondiendo a <b>${esc(replyContext.author)}</b>: ${esc(replyContext.text.slice(0,60))}</span><span class="grow"></span><button class="btn ghost small" id="cancelReply">✕</button></div>`:''}
+      ${pendingAttachment? `<div class="reply-banner"><span>📎 ${esc(pendingAttachment.name)} (${formatFileSize(pendingAttachment.size)})</span><span class="grow"></span><button class="btn ghost small" id="cancelAttachment">✕</button></div>`:''}
+      ${attachmentUploading? `<div class="reply-banner"><span>Subiendo archivo...</span></div>`:''}
       <div class="mention-pop" id="mentionPop"></div>
-      <div class="composer-box ${replyContext?'attached':''}">
+      <div class="composer-box ${(replyContext||pendingAttachment||attachmentUploading)?'attached':''}">
+        <input type="file" id="fileInput" style="display:none">
+        <button class="btn ghost" id="attachBtn" title="Adjuntar archivo" style="padding:8px 10px">📎</button>
         <textarea id="msgInput" rows="1" placeholder="Escribe un mensaje... usa @ para mencionar, **negrita**, *cursiva*, \`código\`"></textarea>
         <div class="emoji-quick">
           <button data-fmt="bold" title="Negrita"><b>B</b></button>
@@ -2325,6 +2369,26 @@ function renderChat(isPoll){
   `;
   content.scrollTop = content.scrollHeight;
   wireMessageButtons(content, ch, all);
+
+  const attachBtn = document.getElementById('attachBtn');
+  const fileInput = document.getElementById('fileInput');
+  attachBtn.addEventListener('click', ()=>fileInput.click());
+  fileInput.addEventListener('change', async ()=>{
+    const file = fileInput.files[0];
+    if(!file) return;
+    attachmentUploading = true; renderChat();
+    try{
+      pendingAttachment = await uploadAttachment(file);
+    }catch(e){
+      alert(e.message || 'No se pudo subir el archivo.');
+      pendingAttachment = null;
+    }
+    attachmentUploading = false;
+    renderChat();
+    document.getElementById('msgInput')?.focus();
+  });
+  const cancelAttachmentBtn = document.getElementById('cancelAttachment');
+  if(cancelAttachmentBtn) cancelAttachmentBtn.addEventListener('click', ()=>{ pendingAttachment = null; renderChat(); });
 
   const cancelReply = document.getElementById('cancelReply');
   if(cancelReply) cancelReply.addEventListener('click', ()=>{ replyContext=null; renderChat(); });
@@ -2537,11 +2601,15 @@ function renderTasks(){
       <button class="view-toggle-btn ${taskViewMode==='board'?'active':''}" id="viewBoardBtn">📋 Tablero</button>
       <button class="view-toggle-btn ${taskViewMode==='list'?'active':''}" id="viewListBtn">☰ Lista</button>
     </div>
-    <div class="grow"></div><button class="btn primary" id="newTaskBtn">+ Nueva tarea</button>`;
+    <div class="grow"></div>
+    ${isAdmin? `<button class="btn ghost" id="customFieldsBtn" title="Configurar campos personalizados">⚙ Campos</button>`:''}
+    <button class="btn primary" id="newTaskBtn">+ Nueva tarea</button>`;
   wireMenuToggle();
   document.getElementById('newTaskBtn').addEventListener('click', openTaskModal);
   document.getElementById('viewBoardBtn').addEventListener('click', ()=>{ taskViewMode='board'; renderTasks(); });
   document.getElementById('viewListBtn').addEventListener('click', ()=>{ taskViewMode='list'; renderTasks(); });
+  const cfBtn = document.getElementById('customFieldsBtn');
+  if(cfBtn) cfBtn.addEventListener('click', openCustomFieldsModal);
 
   const projTasks = tasks.filter(t=>t.projectId===currentProjectId);
   const content = document.getElementById('content');
@@ -2607,6 +2675,7 @@ function renderTaskTable(projTasks){
     {key:'due', label:'Fecha límite'},
     {key:'status', label:'Estado'},
   ];
+  const cFields = customFieldsFor(currentProject());
   const PRIORITY_ORDER = {alta:0, media:1, baja:2};
   const STATUS_ORDER = {todo:0, doing:1, done:2};
   const sorted = [...projTasks].sort((a,b)=>{
@@ -2622,7 +2691,7 @@ function renderTaskTable(projTasks){
     <table class="task-table">
       <thead><tr>
         ${cols.map(c=>`<th data-sortkey="${c.key}">${c.label} ${taskSort.key===c.key? (taskSort.dir==='asc'?'▲':'▼') : ''}</th>`).join('')}
-        <th>Colaboradores</th><th>Meta</th><th></th>
+        <th>Colaboradores</th><th>Meta</th>${cFields.map(f=>`<th>${esc(f.name)}</th>`).join('')}<th></th>
       </tr></thead>
       <tbody>
         ${sorted.length? sorted.map(t=>{
@@ -2637,9 +2706,10 @@ function renderTaskTable(projTasks){
             <td><select data-taskstatus="${t.id}">${STATUSES.map(s=>`<option value="${s.v}" ${s.v===t.status?'selected':''}>${s.l}</option>`).join('')}</select></td>
             <td>${(t.members||[]).map(m=>`<span class="av" style="width:20px;height:20px;font-size:9px;background:${colorFor(m)}" title="${esc(m)}">${initials(m)}</span>`).join(' ')||'—'}</td>
             <td>${goal? `🎯 ${esc(goal.title)}`:'—'}</td>
+            ${cFields.map(f=>`<td>${t.customValues && t.customValues[f.id]? esc(t.customValues[f.id]) : '—'}</td>`).join('')}
             <td><button class="card-del" data-taskdel="${t.id}">Eliminar</button></td>
           </tr>`;
-        }).join('') : `<tr><td colspan="8"><div class="empty">Sin tareas en este proyecto</div></td></tr>`}
+        }).join('') : `<tr><td colspan="${8+cFields.length}"><div class="empty">Sin tareas en este proyecto</div></td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -2695,6 +2765,8 @@ function renderTaskCard(t){
   const depBlocked = dep && dep.status!=='done';
   const subtasks = t.subtasks||[];
   const subDone = subtasks.filter(s=>s.done).length;
+  const cFields = customFieldsFor(projects.find(p=>p.id===t.projectId));
+  const filledCFields = cFields.filter(f=>t.customValues && t.customValues[f.id]);
   const REC_LABELS = {none:'', daily:'🔁 Diaria', weekly:'🔁 Semanal', monthly:'🔁 Mensual'};
   return `<div class="card" draggable="true" data-taskid="${t.id}">
     <div class="card-title">${esc(t.title)}</div>
@@ -2713,6 +2785,9 @@ function renderTaskCard(t){
     </div>`:''}
     ${t.recurrence && t.recurrence!=='none'? `<div style="font-size:11px;color:var(--accent-2);margin-top:6px">${REC_LABELS[t.recurrence]}</div>`:''}
     ${dep? `<div style="font-size:11px;margin-top:6px;color:${depBlocked?'var(--danger)':'var(--accent-2)'}">⛓ depende de: ${esc(dep.title)}${depBlocked?' (pendiente)':' (lista)'}</div>`:''}
+    ${filledCFields.length? `<div style="margin-top:6px;display:flex;flex-direction:column;gap:2px">
+      ${filledCFields.map(f=>`<div style="font-size:11px;color:var(--text-muted)"><b style="color:var(--text)">${esc(f.name)}:</b> ${esc(t.customValues[f.id])}</div>`).join('')}
+    </div>`:''}
     ${subtasks.length? `<div style="margin-top:8px">
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Subtareas ${subDone}/${subtasks.length}</div>
       ${subtasks.map((s,i)=>`<div class="kr ${s.done?'done':''}" style="padding:3px 0;border-top:none"><input type="checkbox" ${s.done?'checked':''} data-subtoggle="${t.id}|${i}"><span style="font-size:12px">${esc(s.text)}</span></div>`).join('')}
@@ -2727,10 +2802,57 @@ function renderTaskCard(t){
     ${goal? `<div class="card-goal">🎯 ${esc(goal.title)}</div>`:''}
   </div>`;
 }
+function customFieldsFor(project){
+  return (project && project.customFields) || [];
+}
+function openCustomFieldsModal(){
+  const proj = currentProject();
+  const fields = customFieldsFor(proj);
+  const html = `
+    <h3>Campos personalizados</h3>
+    <div class="lead">Agrega columnas propias a las tareas de este proyecto (ej. "Presupuesto", "Cliente"). Solo los administradores las configuran; todo el proyecto las ve y las llena.</div>
+    <div id="cfList" style="margin-bottom:14px">
+      ${fields.length? fields.map(f=>`
+        <div class="card-row" style="padding:8px 0;border-top:1px solid var(--border)">
+          <span>${esc(f.name)} <span class="team-tag">${f.type==='number'?'Número':f.type==='date'?'Fecha':'Texto'}</span></span>
+          <button class="card-del" data-cfdel="${f.id}">Eliminar</button>
+        </div>
+      `).join('') : '<div class="empty">Sin campos personalizados todavía.</div>'}
+    </div>
+    <hr style="border-color:var(--border);margin:12px 0">
+    <div class="field"><label>Nombre del campo nuevo</label><input type="text" id="cfName" placeholder="Ej. Presupuesto"></div>
+    <div class="field"><label>Tipo</label><select id="cfType"><option value="text">Texto</option><option value="number">Número</option><option value="date">Fecha</option></select></div>
+    <div class="modal-actions"><button class="btn ghost" id="cfClose">Cerrar</button><button class="btn primary" id="cfAdd">Agregar campo</button></div>
+  `;
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('cfClose').addEventListener('click', closeModal);
+  document.querySelectorAll('[data-cfdel]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('¿Eliminar este campo? Los valores ya guardados en tareas existentes dejarán de mostrarse.')) return;
+    projects = await pGetFresh('projects', projects);
+    const p = projects.find(x=>x.id===proj.id);
+    p.customFields = (p.customFields||[]).filter(f=>f.id!==b.dataset.cfdel);
+    if(!(await pSetChecked('projects', projects, 'eliminación de campo'))) return;
+    openCustomFieldsModal();
+  }));
+  document.getElementById('cfAdd').addEventListener('click', async ()=>{
+    const name = document.getElementById('cfName').value.trim();
+    const type = document.getElementById('cfType').value;
+    if(!name) return;
+    projects = await pGetFresh('projects', projects);
+    const p = projects.find(x=>x.id===proj.id);
+    p.customFields = p.customFields || [];
+    p.customFields.push({id:uid(), name, type});
+    if(!(await pSetChecked('projects', projects, 'nuevo campo personalizado'))) return;
+    logActivity('campo_creado', `Agregó el campo personalizado "${name}"`, null);
+    openCustomFieldsModal();
+  });
+}
 function openTaskModal(){
   const members = projectMembers(currentProject());
   const projGoals = goals.filter(g=>g.projectId===currentProjectId);
   const projTasks = tasks.filter(t=>t.projectId===currentProjectId);
+  const customFields = customFieldsFor(currentProject());
   const html = `
     <h3>Nueva tarea</h3>
     <div class="field"><label>Título</label><input type="text" id="tTitle"></div>
@@ -2745,6 +2867,7 @@ function openTaskModal(){
     <div class="field"><label>Depende de (opcional)</label><select id="tDepends"><option value="">Ninguna</option>${projTasks.map(x=>`<option value="${x.id}">${esc(x.title)}</option>`).join('')}</select></div>
     <div class="field"><label>Meta relacionada (opcional)</label><select id="tGoal"><option value="">Ninguna</option>${projGoals.map(g=>`<option value="${g.id}">${esc(g.title)}</option>`).join('')}</select></div>
     <div class="field"><label>Subtareas (una por línea, opcional)</label><textarea id="tSubtasks" placeholder="Ej. Redactar borrador&#10;Revisar con el equipo"></textarea></div>
+    ${customFields.map(f=>`<div class="field"><label>${esc(f.name)}</label><input type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" id="cf_${f.id}"></div>`).join('')}
     <div class="modal-actions"><button class="btn ghost" id="tCancel">Cancelar</button><button class="btn primary" id="tSave">Crear tarea</button></div>
   `;
   document.getElementById('modalBody').innerHTML = html;
@@ -2774,6 +2897,7 @@ function openTaskModal(){
       dependsOn:document.getElementById('tDepends').value||null,
       subtasks:subLines.map(s=>({text:s,done:false})), comments:[],
       goalId:document.getElementById('tGoal').value||null, projectId:currentProjectId,
+      customValues: Object.fromEntries(customFields.map(f=>[f.id, document.getElementById('cf_'+f.id).value])),
       createdBy:me.name, createdAt:Date.now()
     };
     tasks.push(newTask);
