@@ -2143,7 +2143,7 @@ function renderDashboard(){
 }
 /* ================= ACTIVITY ================= */
 const ACTIVITY_LABELS = {
-  tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️',
+  tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️', tarea_comentario:'💬',
   meta_creada:'🆕', meta_progreso:'📈', meta_eliminada:'🗑️',
   evento_creado:'🆕', evento_eliminado:'🗑️', evento_actualizado:'✏️',
   canal_creado:'🆕', mensaje_eliminado:'🗑️', canal_archivado:'📦',
@@ -2579,6 +2579,7 @@ function renderTasks(){
     if(!(await pSetChecked('tasks', tasks, 'subtarea'))){ t.subtasks[+idx].done = prev; return; }
     renderTasks();
   }));
+  content.querySelectorAll('[data-taskopen]').forEach(b=>b.addEventListener('click', ()=>openTaskDetailModal(b.dataset.taskopen)));
 
   content.querySelectorAll('[data-taskid]').forEach(card=>{
     card.addEventListener('dragstart', e=>{
@@ -2629,7 +2630,7 @@ function renderTaskTable(projTasks){
           const goal = goals.find(g=>g.id===t.goalId);
           const overdue = t.due && t.due<new Date().toISOString().slice(0,10) && t.status!=='done';
           return `<tr>
-            <td class="tt-title">${esc(t.title)}</td>
+            <td class="tt-title"><button class="link-btn" data-taskopen="${t.id}" style="text-align:left;color:var(--text);font-weight:700">${esc(t.title)} <span style="color:var(--text-muted);font-weight:600">💬${(t.comments||[]).length}</span></button></td>
             <td><span class="who"><span class="av" style="background:${colorFor(t.assignee)}">${initials(t.assignee||'?')}</span>${esc(t.assignee||'Sin asignar')}</span></td>
             <td><span class="badge ${pr.c}">${pr.l}</span></td>
             <td style="${overdue?'color:var(--danger);font-weight:700':''}">${t.due? esc(t.due):'—'}</td>
@@ -2718,7 +2719,10 @@ function renderTaskCard(t){
     </div>`:''}
     <div class="card-row">
       <select data-taskstatus="${t.id}">${STATUSES.map(s=>`<option value="${s.v}" ${s.v===t.status?'selected':''}>${s.l}</option>`).join('')}</select>
-      <button class="card-del" data-taskdel="${t.id}">Eliminar</button>
+      <span style="display:flex;gap:10px;align-items:center">
+        <button class="link-btn" data-taskopen="${t.id}">💬 ${(t.comments||[]).length}</button>
+        <button class="card-del" data-taskdel="${t.id}">Eliminar</button>
+      </span>
     </div>
     ${goal? `<div class="card-goal">🎯 ${esc(goal.title)}</div>`:''}
   </div>`;
@@ -2768,7 +2772,7 @@ function openTaskModal(){
       showOnCalendar: document.getElementById('tShowCal').checked,
       recurrence:document.getElementById('tRecurrence').value,
       dependsOn:document.getElementById('tDepends').value||null,
-      subtasks:subLines.map(s=>({text:s,done:false})),
+      subtasks:subLines.map(s=>({text:s,done:false})), comments:[],
       goalId:document.getElementById('tGoal').value||null, projectId:currentProjectId,
       createdBy:me.name, createdAt:Date.now()
     };
@@ -2777,6 +2781,62 @@ function openTaskModal(){
     logActivity('tarea_creada', `Creó la tarea "${title}"`);
     notifyTaskAssignment(newTask);
     closeModal(); renderTasks();
+  });
+}
+
+function openTaskDetailModal(taskId){
+  const t = tasks.find(x=>x.id===taskId);
+  if(!t) return;
+  const pr = PRIORITIES.find(p=>p.v===t.priority)||PRIORITIES[1];
+  const goal = goals.find(g=>g.id===t.goalId);
+  const comments = (t.comments||[]).slice().sort((a,b)=>a.ts-b.ts);
+  const html = `
+    <h3>${esc(t.title)}</h3>
+    <div class="lead">
+      <span class="badge ${pr.c}">${pr.l}</span>
+      ${t.due? ` · 📅 ${esc(t.due)}`:''}
+      ${t.assignee? ` · 👤 ${esc(t.assignee)}`:''}
+      ${goal? ` · 🎯 ${esc(goal.title)}`:''}
+    </div>
+    ${t.description? `<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px">${esc(t.description)}</div>`:''}
+    <hr style="border-color:var(--border);margin:12px 0">
+    <div style="font-size:12.5px;color:var(--text-muted);font-weight:700;margin-bottom:8px">Comentarios</div>
+    <div id="taskCommentList" style="max-height:35vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+      ${comments.length? comments.map(c=>`
+        <div style="display:flex;gap:8px">
+          <span class="av" style="width:26px;height:26px;font-size:11px;background:${colorFor(c.author)}">${initials(c.author)}</span>
+          <div style="flex:1">
+            <div style="font-size:12.5px"><b>${esc(c.author)}</b> <span style="color:var(--text-muted);font-size:11px">${fmtTime(c.ts)}</span></div>
+            <div style="font-size:13px">${linkifyAndMention(c.text)}</div>
+          </div>
+        </div>
+      `).join('') : '<div class="empty" style="padding:10px 0">Sin comentarios todavía.</div>'}
+    </div>
+    <div class="field"><textarea id="taskCommentInput" placeholder="Escribe un comentario..." rows="2"></textarea></div>
+    <div class="modal-actions"><button class="btn ghost" id="tdClose">Cerrar</button><button class="btn primary" id="tdSend">Comentar</button></div>
+  `;
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('tdClose').addEventListener('click', closeModal);
+  document.getElementById('tdSend').addEventListener('click', async ()=>{
+    const input = document.getElementById('taskCommentInput');
+    const text = input.value.trim();
+    if(!text) return;
+    tasks = await pGetFresh('tasks', tasks);
+    const task = tasks.find(x=>x.id===taskId);
+    if(!task) return closeModal();
+    task.comments = task.comments || [];
+    task.comments.push({id:uid(), author:me.name, text, ts:Date.now()});
+    if(!(await pSetChecked('tasks', tasks, 'comentario'))) return;
+    const notifyNames = [task.assignee, ...(task.members||[])].filter(n=>n && n!==me.name);
+    if(notifyNames.length){
+      logNotification({
+        type:'task', title:`${me.name} comentó: ${task.title}`,
+        body:text, targetNames:[...new Set(notifyNames)], projectId:task.projectId, view:'tasks'
+      });
+    }
+    logActivity('tarea_comentario', `Comentó en la tarea "${task.title}"`);
+    openTaskDetailModal(taskId);
   });
 }
 
