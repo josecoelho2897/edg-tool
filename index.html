@@ -438,15 +438,18 @@ function emailFor(name){
   return r?.email || null;
 }
 async function notifyTaskAssignment(task){
-  const names = [task.assignee, ...(task.members||[])].filter(Boolean);
+  const names = [task.assignee, ...(task.members||[]), me.name].filter(Boolean);
   const uniqueNames = [...new Set(names)];
   for(const name of uniqueNames){
     const email = emailFor(name);
-    if(!email || name===me.name) continue;
+    if(!email) continue;
+    const isCreator = name===me.name;
     await sendEmailNotification(
       email, name,
-      `Te asignaron una tarea: ${task.title}`,
-      `${me.name} te asignó la tarea "${task.title}"${task.due? ` (fecha límite: ${task.due})`:''} en el proyecto "${currentProject()?.name||''}".`
+      isCreator ? `Creaste una tarea: ${task.title}` : `Te asignaron una tarea: ${task.title}`,
+      isCreator
+        ? `Confirmación: creaste la tarea "${task.title}"${task.due? ` (fecha límite: ${task.due})`:''} en el proyecto "${currentProject()?.name||''}".`
+        : `${me.name} te asignó la tarea "${task.title}"${task.due? ` (fecha límite: ${task.due})`:''} en el proyecto "${currentProject()?.name||''}".`
     );
   }
 }
@@ -457,12 +460,18 @@ async function notifyNewEvent(event){
   } else {
     recipients = projectMembers(currentProject()).filter(r=>r.email).map(r=>({name:r.name, email:r.email}));
   }
+  if(!recipients.some(r=>r.name===me.name)){
+    const myEmail = emailFor(me.name);
+    if(myEmail) recipients.push({name:me.name, email:myEmail});
+  }
   for(const r of recipients){
-    if(r.name===me.name) continue;
+    const isCreator = r.name===me.name;
     await sendEmailNotification(
       r.email, r.name,
-      `Nuevo evento: ${event.title}`,
-      `${me.name} agregó el evento "${event.title}" el ${event.date}${event.time? ` a las ${event.time}`:''} en el proyecto "${currentProject()?.name||''}".`
+      isCreator ? `Creaste un evento: ${event.title}` : `Nuevo evento: ${event.title}`,
+      isCreator
+        ? `Confirmación: agregaste el evento "${event.title}" el ${event.date}${event.time? ` a las ${event.time}`:''} en el proyecto "${currentProject()?.name||''}".`
+        : `${me.name} agregó el evento "${event.title}" el ${event.date}${event.time? ` a las ${event.time}`:''} en el proyecto "${currentProject()?.name||''}".`
     );
   }
 }
