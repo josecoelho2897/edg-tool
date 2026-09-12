@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Espacio de equipo</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fontsource-manrope/5.0.8/index.css">
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <style>
   :root{
     --bg:#12181B;
@@ -414,6 +415,57 @@ const EDG_LOGO_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAfQAAAD
 /* ---------------- storage backend: Supabase (kv_store table) ---------------- */
 const SUPABASE_URL = "https://iozmufovriszyhqhwzqa.supabase.co";
 const SUPABASE_KEY = "sb_publishable_wBf87sTE6FH-6PnGKGFyAQ_aVWqj5H2";
+
+/* ---------------- email notifications (EmailJS) ---------------- */
+const EMAILJS_PUBLIC_KEY = "QZe8kSc6A8zZkW_u2";
+const EMAILJS_SERVICE_ID = "service_tncnmgr";
+const EMAILJS_TEMPLATE_ID = "ehzmqkl";
+try{ emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY }); }catch(e){ console.error('emailjs init error', e); }
+async function sendEmailNotification(toEmail, toName, title, message){
+  if(!toEmail) return;
+  try{
+    await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+      to_email: toEmail,
+      to_name: toName || 'equipo',
+      title: title,
+      message: message,
+      name: 'Espacio de equipo'
+    });
+  }catch(e){ console.error('email notification error', e); }
+}
+function emailFor(name){
+  const r = roster.find(x=>x.name===name);
+  return r?.email || null;
+}
+async function notifyTaskAssignment(task){
+  const names = [task.assignee, ...(task.members||[])].filter(Boolean);
+  const uniqueNames = [...new Set(names)];
+  for(const name of uniqueNames){
+    const email = emailFor(name);
+    if(!email || name===me.name) continue;
+    await sendEmailNotification(
+      email, name,
+      `Te asignaron una tarea: ${task.title}`,
+      `${me.name} te asignó la tarea "${task.title}"${task.due? ` (fecha límite: ${task.due})`:''} en el proyecto "${currentProject()?.name||''}".`
+    );
+  }
+}
+async function notifyNewEvent(event){
+  let recipients = [];
+  if(event.attendees && event.attendees.length){
+    recipients = event.attendees.map(name=>({name, email:emailFor(name)})).filter(r=>r.email);
+  } else {
+    recipients = projectMembers(currentProject()).filter(r=>r.email).map(r=>({name:r.name, email:r.email}));
+  }
+  for(const r of recipients){
+    if(r.name===me.name) continue;
+    await sendEmailNotification(
+      r.email, r.name,
+      `Nuevo evento: ${event.title}`,
+      `${me.name} agregó el evento "${event.title}" el ${event.date}${event.time? ` a las ${event.time}`:''} en el proyecto "${currentProject()?.name||''}".`
+    );
+  }
+}
 async function sGet(key, shared, fallback){
   if(!shared){
     try{
@@ -2520,7 +2572,7 @@ function openTaskModal(){
     if(!title) return;
     const subLines = document.getElementById('tSubtasks').value.split('\n').map(s=>s.trim()).filter(Boolean);
     tasks = await pGetFresh('tasks', tasks);
-    tasks.push({
+    const newTask = {
       id:uid(), title, description:document.getElementById('tDesc').value.trim(),
       assignee:document.getElementById('tAssignee').value, members:[...pickedMembers], team:document.getElementById('tTeam').value.trim(),
       due:document.getElementById('tDue').value, priority, status:'todo',
@@ -2530,9 +2582,11 @@ function openTaskModal(){
       subtasks:subLines.map(s=>({text:s,done:false})),
       goalId:document.getElementById('tGoal').value||null, projectId:currentProjectId,
       createdBy:me.name, createdAt:Date.now()
-    });
+    };
+    tasks.push(newTask);
     if(!(await pSetChecked('tasks', tasks, 'nueva tarea'))) return;
     logActivity('tarea_creada', `Creó la tarea "${title}"`);
+    notifyTaskAssignment(newTask);
     closeModal(); renderTasks();
   });
 }
@@ -2802,6 +2856,7 @@ function openDayModal(dateKey){
       if(!(await pSetChecked('events', events, 'nuevo evento'))) return;
       logActivity('evento_creado', `Creó el evento "${title}" (${dateKey})`);
       await logEventUpdate(newEv, 'created');
+      notifyNewEvent(newEv);
     }
     closeModal(); renderCalendar();
   });
