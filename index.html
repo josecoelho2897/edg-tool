@@ -745,13 +745,16 @@ function startBackgroundLoops(){
 
 async function ensureRoster(){
   roster = await pGetFresh('roster', roster, []);
+  const myEmail = accounts[currentUsername]?.email || '';
   const existing = roster.find(r=>r.name===me.name);
   if(!existing){
-    roster.push({name:me.name,color:me.color,username:currentUsername});
+    roster.push({name:me.name,color:me.color,username:currentUsername,email:myEmail});
     await pSet('roster', roster);
-  } else if(!existing.username){
-    existing.username = currentUsername;
-    await pSet('roster', roster);
+  } else {
+    let changed = false;
+    if(!existing.username){ existing.username = currentUsername; changed = true; }
+    if(existing.email!==myEmail){ existing.email = myEmail; changed = true; }
+    if(changed) await pSet('roster', roster);
   }
 }
 async function heartbeat(){
@@ -917,6 +920,7 @@ function openAuthModal(){
       <div class="field"><label>Tu nombre</label><input type="text" id="aName" placeholder="Ej. María Fernández"></div>
       <div class="field"><label>Color</label><div class="swatches" id="aSwatches"></div></div>
       <div class="field"><label>Usuario</label><input type="text" id="aUser" placeholder="ej. maria.f"></div>
+      <div class="field"><label>Correo electrónico</label><input type="text" id="aEmail" placeholder="para recibir notificaciones (opcional)"></div>
       <div class="field"><label>Contraseña</label><input type="password" id="aPass"></div>
       <div class="field"><label>Confirmar contraseña</label><input type="password" id="aPass2"></div>
       <div class="field"><label>Frase de cifrado del espacio</label><input type="password" id="aPhrase" placeholder="Un secreto que solo conozca tu equipo"></div>
@@ -954,6 +958,7 @@ function openAuthModal(){
       <div class="field"><label>Tu nombre</label><input type="text" id="aName"></div>
       <div class="field"><label>Color</label><div class="swatches" id="aSwatches"></div></div>
       <div class="field"><label>Usuario</label><input type="text" id="aUser"></div>
+      <div class="field"><label>Correo electrónico</label><input type="text" id="aEmail" placeholder="para recibir notificaciones (opcional)"></div>
       <div class="field"><label>Contraseña</label><input type="password" id="aPass"></div>
       <div class="field"><label>Confirmar contraseña</label><input type="password" id="aPass2"></div>
       <div class="field"><label>Frase de cifrado del espacio</label><input type="password" id="aPhrase" placeholder="Pídesela a un compañero"></div>
@@ -1003,7 +1008,7 @@ function openAuthModal(){
       submitBtn.disabled = true; submitBtn.textContent = 'Guardando...';
       const saltHex = randHex(16);
       const hash = await hashPassword(pass, saltHex);
-      accounts = {[user]: {saltHex, hash, displayName:name, color:pickedColor(), isAdmin:true, isMaster:true, status:'approved'}};
+      accounts = {[user]: {saltHex, hash, displayName:name, email:document.getElementById('aEmail').value.trim(), color:pickedColor(), isAdmin:true, isMaster:true, status:'approved'}};
       if(!(await sSetCritical('accounts', accounts, true))){
         submitBtn.disabled = false; submitBtn.textContent = 'Crear espacio y entrar';
         return showErr('No se pudo guardar tu cuenta por un problema temporal de conexión. Espera unos segundos y vuelve a intentar — no cierres ni recargues la página todavía.');
@@ -1113,7 +1118,7 @@ function openAuthModal(){
       }
       const saltHex = randHex(16);
       const hash = await hashPassword(pass, saltHex);
-      accounts[user] = {saltHex, hash, displayName:name, color:pickedColor(), isAdmin:false, isMaster:false, status:'pending'};
+      accounts[user] = {saltHex, hash, displayName:name, email:document.getElementById('aEmail').value.trim(), color:pickedColor(), isAdmin:false, isMaster:false, status:'pending'};
       const submitBtn = document.getElementById('aSubmit');
       submitBtn.disabled = true; submitBtn.textContent = 'Guardando...';
       if(!(await sSetCritical('accounts', accounts, true))){
@@ -1255,6 +1260,7 @@ function openAdminAddMemberModal(){
     <div class="field"><label>Nombre para mostrar</label><input type="text" id="amName" placeholder="Ej. María Fernández"></div>
     <div class="field"><label>Color</label><div class="swatches" id="amSwatches">${PALETTE.map((c,i)=>`<div class="swatch ${i===0?'sel':''}" style="background:${c}" data-c="${c}"></div>`).join('')}</div></div>
     <div class="field"><label>Usuario</label><input type="text" id="amUser" placeholder="ej. maria.f"></div>
+    <div class="field"><label>Correo electrónico</label><input type="text" id="amEmail" placeholder="para recibir notificaciones (opcional)"></div>
     <div class="field"><label>Contraseña temporal</label><input type="text" id="amPass" placeholder="Se la compartes tú por otro medio"></div>
     <div class="hint">Al iniciar sesión por primera vez, con esta contraseña podrá recuperar la frase de cifrado automáticamente (igual que con "¿La olvidaste?").</div>
     <div class="error-text" id="amError"></div>
@@ -1279,7 +1285,7 @@ function openAdminAddMemberModal(){
     if(accounts[user]) return err.textContent='Ese usuario ya existe.';
     const saltHex = randHex(16);
     const hash = await hashPassword(pass, saltHex);
-    accounts[user] = {saltHex, hash, displayName:name, color, isAdmin:false, isMaster:false, status:'approved'};
+    accounts[user] = {saltHex, hash, displayName:name, email:document.getElementById('amEmail').value.trim(), color, isAdmin:false, isMaster:false, status:'approved'};
     const saveBtn = document.getElementById('amSave');
     saveBtn.disabled = true; saveBtn.textContent = 'Guardando...';
     if(!(await sSetCritical('accounts', accounts, true))){
@@ -1302,6 +1308,7 @@ function openEditProfileModal(){
   const html = `
     <h3>Editar mi perfil</h3>
     <div class="field"><label>Nombre para mostrar</label><input type="text" id="epName" value="${esc(me.name)}"></div>
+    <div class="field"><label>Correo electrónico</label><input type="text" id="epEmail" value="${esc(accounts[currentUsername]?.email||'')}" placeholder="para recibir notificaciones (opcional)"></div>
     <div class="field"><label>Color</label><div class="swatches" id="epSwatches">${PALETTE.map(c=>`<div class="swatch ${c===me.color?'sel':''}" style="background:${c}" data-c="${c}"></div>`).join('')}</div></div>
     <div class="error-text" id="epError"></div>
     <div class="modal-actions"><button class="btn ghost" id="epCancel">Cancelar</button><button class="btn primary" id="epSave">Guardar</button></div>
@@ -1315,19 +1322,21 @@ function openEditProfileModal(){
   document.getElementById('epCancel').addEventListener('click', closeModal);
   document.getElementById('epSave').addEventListener('click', async ()=>{
     const name = document.getElementById('epName').value.trim();
+    const email = document.getElementById('epEmail').value.trim();
     const color = document.querySelector('#epSwatches .swatch.sel')?.dataset.c || me.color;
     const err = document.getElementById('epError');
     if(!name) return err.textContent = 'Escribe un nombre.';
     const prevName = me.name;
     accounts = await sGet('accounts', true, accounts);
     accounts[currentUsername].displayName = name;
+    accounts[currentUsername].email = email;
     accounts[currentUsername].color = color;
     if(!(await sSetCritical('accounts', accounts, true))){
       return err.textContent = 'No se pudo guardar por un problema de conexión. Intenta de nuevo.';
     }
     roster = await pGetFresh('roster', roster);
     const r = roster.find(x=>x.username===currentUsername);
-    if(r){ r.name = name; r.color = color; await pSet('roster', roster); }
+    if(r){ r.name = name; r.color = color; r.email = email; await pSet('roster', roster); }
     me = {name, color};
     closeModal();
     renderShell(); renderMain();
@@ -1365,7 +1374,7 @@ function openPendingApprovalsModal(){
     // right away, instead of only after their first personal login.
     roster = await pGetFresh('roster', roster);
     if(!roster.find(r=>r.username===u)){
-      roster.push({name:accounts[u].displayName, color:accounts[u].color, username:u});
+      roster.push({name:accounts[u].displayName, color:accounts[u].color, username:u, email:accounts[u].email||''});
       await pSet('roster', roster);
     }
     logActivity('admin_aprobacion', `Aprobó el acceso de ${accounts[u].displayName}`, null);
