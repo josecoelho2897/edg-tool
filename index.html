@@ -63,6 +63,13 @@
     width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
     font-weight:700;font-size:13px;border:2px solid var(--border);color:#12181B;cursor:pointer;
   }
+  .notif-badge{
+    position:absolute;top:2px;right:8px;background:var(--danger);color:#fff;
+    font-size:9px;font-weight:800;min-width:15px;height:15px;border-radius:8px;
+    display:flex;align-items:center;justify-content:center;padding:0 3px;line-height:1;
+  }
+  .notif-item{cursor:pointer;}
+  .notif-item:hover{background:var(--surface-2);}
 
   /* --- secondary panel --- */
   .side{
@@ -345,6 +352,7 @@
     }
     .rail-btn svg{width:20px;height:20px;}
     #globalSearchBtn{order:-1;}
+    #notifBellBtn{order:-1;}
     .rail-me{width:34px;height:34px;font-size:12px;margin:auto 2px auto 6px;flex:0 0 auto;}
 
     main{padding-bottom:calc(58px + env(safe-area-inset-bottom));}
@@ -456,6 +464,11 @@ function emailFor(name){
 async function notifyTaskAssignment(task){
   const names = [task.assignee, ...(task.members||[]), me.name].filter(Boolean);
   const uniqueNames = [...new Set(names)];
+  logNotification({
+    type:'task', title:`Tarea: ${task.title}`,
+    body:`${me.name} · ${task.due? 'vence '+task.due : 'sin fecha límite'}`,
+    targetNames: uniqueNames, projectId: task.projectId, view:'tasks'
+  });
   for(const name of uniqueNames){
     const email = emailFor(name);
     if(!email) continue;
@@ -480,6 +493,12 @@ async function notifyNewEvent(event){
     const myEmail = emailFor(me.name);
     if(myEmail) recipients.push({name:me.name, email:myEmail});
   }
+  logNotification({
+    type:'event', title:`Evento: ${event.title}`,
+    body:`${me.name} · ${event.date}${event.time? ' · '+event.time:''}`,
+    targetNames: (event.attendees && event.attendees.length) ? [...new Set([...event.attendees, me.name])] : null,
+    projectId: event.projectId, view:'calendar'
+  });
   for(const r of recipients){
     const isCreator = r.name===me.name;
     await sendEmailNotification(
@@ -879,6 +898,7 @@ async function pollLoop(){
 
     renderMain(true);
     renderSideOnly();
+    updateNotifBadge();
   } finally {
     pollInFlight = false;
   }
@@ -928,6 +948,69 @@ function checkForEventNotifications(updates){
     showBrowserNotification(`📅 ${verb}: ${u.title}`, `${u.editor} · ${u.date}`);
   });
 }
+
+/* ---------------- in-app notification center ---------------- */
+let notifLastOpened = 0;
+async function logNotification({type, title, body, targetNames, projectId, view, channelId}){
+  try{
+    let list = await pGet('notifications', []);
+    list.push({
+      id:uid(), ts:Date.now(), type, title, body,
+      targetNames: targetNames===undefined ? null : targetNames,
+      projectId, actor:me.name, view, channelId: channelId||null
+    });
+    if(list.length>300) list = list.slice(list.length-300);
+    await pSet('notifications', list);
+  }catch(e){ /* never block the main action over notification bookkeeping */ }
+}
+async function getMyNotifications(){
+  const list = await pGet('notifications', []);
+  const accessibleProjIds = new Set(myProjects().map(p=>p.id));
+  return list
+    .filter(n => accessibleProjIds.has(n.projectId) && (n.targetNames===null || n.targetNames.includes(me.name)))
+    .sort((a,b)=>b.ts-a.ts);
+}
+async function updateNotifBadge(){
+  const badge = document.getElementById('notifBadge');
+  if(!badge) return;
+  const mine = await getMyNotifications();
+  const unread = mine.filter(n=>n.ts>notifLastOpened && n.actor!==me.name).length;
+  if(unread>0){ badge.textContent = unread>99?'99+':unread; badge.style.display='flex'; }
+  else { badge.style.display='none'; }
+}
+const NOTIF_ICONS = {mention:'💬', task:'📋', event:'📅'};
+async function openNotificationCenterModal(){
+  const mine = (await getMyNotifications()).slice(0,50);
+  const html = `
+    <h3>Notificaciones</h3>
+    <div class="lead">Menciones en el chat, tareas asignadas y eventos nuevos de tus proyectos.</div>
+    <div id="notifList" style="max-height:55vh;overflow-y:auto">
+      ${mine.length? mine.map(n=>`
+        <div class="side-item notif-item" data-notifgo="${n.view||''}|${n.channelId||''}|${n.projectId||''}" style="flex-direction:column;align-items:flex-start;gap:2px;${n.ts>notifLastOpened?'':'opacity:.55'}">
+          <span style="font-weight:700;color:var(--text)">${NOTIF_ICONS[n.type]||'🔔'} ${esc(n.title)}</span>
+          ${n.body? `<span style="font-size:12px;color:var(--text-muted)">${esc(n.body.slice(0,90))}</span>`:''}
+          <span style="font-size:10.5px;color:var(--text-muted)">${new Date(n.ts).toLocaleString('es',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span>
+        </div>
+      `).join('') : '<div class="empty">Sin notificaciones todavía.</div>'}
+    </div>
+    <div class="modal-actions"><button class="btn ghost" id="notifClose">Cerrar</button></div>
+  `;
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('notifClose').addEventListener('click', closeModal);
+  document.querySelectorAll('[data-notifgo]').forEach(el=>el.addEventListener('click', async ()=>{
+    const [targetView, channelId, projectId] = el.dataset.notifgo.split('|');
+    if(projectId && projectId!==currentProjectId){ currentProjectId = projectId; currentDMWith = null; }
+    if(targetView==='chat' && channelId){ currentDMWith = null; currentChannelId = channelId; await loadChannelMessages(channelId); }
+    if(targetView) view = targetView;
+    closeModal();
+    renderShell(); renderMain();
+  }));
+  notifLastOpened = Date.now();
+  await sSet('notifLastOpened', notifLastOpened, false);
+  updateNotifBadge();
+}
+
 function checkForNotifications(channel, msgs){
   msgs.forEach(m=>{
     if(notifiedIds.has(m.id)) return;
@@ -1214,6 +1297,7 @@ function openAuthModal(){
 
 async function onLoggedIn(){
   await ensureRoster();
+  notifLastOpened = await sGet('notifLastOpened', false, 0);
   projects = await pGet('projects', []);
   channels = await pGet('channels', []);
   tasks = await pGet('tasks', []);
@@ -1777,6 +1861,10 @@ function renderShell(){
       <button class="rail-btn" id="globalSearchBtn" title="Buscar en todo">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Buscar
       </button>
+      <button class="rail-btn" id="notifBellBtn" title="Notificaciones" style="position:relative">
+        <svg viewBox="0 0 24 24"><path d="M6 10a6 6 0 1 1 12 0c0 4 1.5 5.5 2 6H4c.5-.5 2-2 2-6z"/><path d="M9.5 19a2.5 2.5 0 0 0 5 0"/></svg>Avisos
+        <span id="notifBadge" class="notif-badge" style="display:none"></span>
+      </button>
       ${NAV.map(n=>`
         <button class="rail-btn ${view===n.v?'active':''}" data-nav="${n.v}">
           <svg viewBox="0 0 24 24">${n.icon}</svg>${n.label}
@@ -1794,6 +1882,8 @@ function renderShell(){
     view = b.dataset.nav; renderShell(); renderMain();
   }));
   document.getElementById('globalSearchBtn').addEventListener('click', openGlobalSearchModal);
+  document.getElementById('notifBellBtn').addEventListener('click', openNotificationCenterModal);
+  updateNotifBadge();
   const logo = document.querySelector('.rail-logo');
   logo.style.cursor='pointer';
   logo.title = 'Cambiar nombre del espacio';
@@ -2404,6 +2494,11 @@ async function sendMessage(chId){
   messagesCache[chId] = msgs;
   reads[chId] = Date.now();
   await sSet('reads', reads, false);
+  const mentioned = roster.filter(r=>r.name!==me.name && new RegExp('@'+r.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i').test(text)).map(r=>r.name);
+  if(mentioned.length){
+    const ch = channels.find(c=>c.id===chId);
+    logNotification({type:'mention', title:`${me.name} te mencionó en #${ch?.name||''}`, body:text, targetNames:mentioned, projectId:currentProjectId, view:'chat', channelId:chId});
+  }
   input.value=''; replyContext=null;
   renderChat();
 }
