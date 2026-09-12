@@ -215,6 +215,17 @@
 
   /* --- tasks --- */
   .task-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:20px;align-items:start;}
+  .view-toggle{display:flex;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:2px;margin-left:12px;}
+  .view-toggle-btn{background:none;border:none;color:var(--text-muted);padding:6px 12px;font-size:12.5px;font-weight:700;border-radius:6px;}
+  .view-toggle-btn.active{background:var(--surface-3);color:var(--text);}
+  .task-table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;font-size:13px;}
+  .task-table th{text-align:left;padding:10px 12px;background:var(--surface-2);color:var(--text-muted);font-size:11.5px;font-weight:800;cursor:pointer;user-select:none;white-space:nowrap;}
+  .task-table th:hover{color:var(--text);}
+  .task-table td{padding:10px 12px;border-top:1px solid var(--border);vertical-align:middle;}
+  .task-table tr:hover td{background:var(--surface-2);}
+  .task-table .tt-title{font-weight:700;max-width:220px;}
+  .task-table select{background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11.5px;padding:3px 6px;}
+  .table-wrap{overflow-x:auto;}
   .task-col h3{font-size:12.5px;color:var(--text-muted);text-transform:none;margin:0 0 10px;display:flex;justify-content:space-between;}
   .task-col-list{display:flex;flex-direction:column;gap:10px;min-height:40px;}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:13px 14px;cursor:grab;}
@@ -346,6 +357,11 @@
     .topbar h2{font-size:14px;}
     .searchbox{width:120px;}
     .task-cols{grid-template-columns:1fr;padding:14px;}
+    .task-table{font-size:12px;}
+    .task-table td, .task-table th{padding:8px;}
+    .pane.table-wrap{padding:0;}
+    .view-toggle{margin-left:6px;}
+    .view-toggle-btn{padding:5px 8px;font-size:11px;}
     .cal-wrap{flex-direction:column;padding:14px;}
     .agenda{width:100%;}
     .grid-cards{grid-template-columns:1fr!important;}
@@ -691,6 +707,8 @@ let currentDMWith = null; // username of the other person, or null if viewing a 
 let dmCache = {}; // username -> messages array
 let calMonth = new Date(); calMonth.setDate(1);
 let chatSearch = "";
+let taskViewMode = "board"; // "board" | "list"
+let taskSort = {key:"due", dir:"asc"};
 let pollingStarted = false;
 let notificationsEnabled = false;
 let notifiedIds = new Set();
@@ -2419,22 +2437,35 @@ async function deleteMsg(chId, msgId){
 /* ================= TASKS ================= */
 function renderTasks(){
   const top = document.getElementById('topbar');
-  top.innerHTML = `${menuToggleHtml()}<h2>Tareas</h2><div class="grow"></div><button class="btn primary" id="newTaskBtn">+ Nueva tarea</button>`;
+  top.innerHTML = `${menuToggleHtml()}<h2>Tareas</h2>
+    <div class="view-toggle">
+      <button class="view-toggle-btn ${taskViewMode==='board'?'active':''}" id="viewBoardBtn">📋 Tablero</button>
+      <button class="view-toggle-btn ${taskViewMode==='list'?'active':''}" id="viewListBtn">☰ Lista</button>
+    </div>
+    <div class="grow"></div><button class="btn primary" id="newTaskBtn">+ Nueva tarea</button>`;
   wireMenuToggle();
   document.getElementById('newTaskBtn').addEventListener('click', openTaskModal);
+  document.getElementById('viewBoardBtn').addEventListener('click', ()=>{ taskViewMode='board'; renderTasks(); });
+  document.getElementById('viewListBtn').addEventListener('click', ()=>{ taskViewMode='list'; renderTasks(); });
 
   const projTasks = tasks.filter(t=>t.projectId===currentProjectId);
   const content = document.getElementById('content');
-  content.innerHTML = `<div class="task-cols">
-    ${STATUSES.map(s=>`
-      <div class="task-col">
-        <h3>${s.l} <span>${projTasks.filter(t=>t.status===s.v).length}</span></h3>
-        <div class="task-col-list" data-coldrop="${s.v}">
-          ${projTasks.filter(t=>t.status===s.v).sort((a,b)=>(a.due||'9999').localeCompare(b.due||'9999')).map(renderTaskCard).join('') || '<div class="empty" style="padding:16px">Sin tareas</div>'}
+
+  if(taskViewMode==='list'){
+    content.innerHTML = renderTaskTable(projTasks);
+    wireTaskTableSort();
+  } else {
+    content.innerHTML = `<div class="task-cols">
+      ${STATUSES.map(s=>`
+        <div class="task-col">
+          <h3>${s.l} <span>${projTasks.filter(t=>t.status===s.v).length}</span></h3>
+          <div class="task-col-list" data-coldrop="${s.v}">
+            ${projTasks.filter(t=>t.status===s.v).sort((a,b)=>(a.due||'9999').localeCompare(b.due||'9999')).map(renderTaskCard).join('') || '<div class="empty" style="padding:16px">Sin tareas</div>'}
+          </div>
         </div>
-      </div>
-    `).join('')}
-  </div>`;
+      `).join('')}
+    </div>`;
+  }
 
   content.querySelectorAll('[data-taskstatus]').forEach(sel=>sel.addEventListener('change', ()=>changeTaskStatus(sel.dataset.taskstatus, sel.value)));
   content.querySelectorAll('[data-taskdel]').forEach(b=>b.addEventListener('click', async ()=>{
@@ -2470,6 +2501,60 @@ function renderTasks(){
       if(tid) changeTaskStatus(tid, col.dataset.coldrop);
     });
   });
+}
+
+function renderTaskTable(projTasks){
+  const cols = [
+    {key:'title', label:'Título'},
+    {key:'assignee', label:'Responsable'},
+    {key:'priority', label:'Prioridad'},
+    {key:'due', label:'Fecha límite'},
+    {key:'status', label:'Estado'},
+  ];
+  const PRIORITY_ORDER = {alta:0, media:1, baja:2};
+  const STATUS_ORDER = {todo:0, doing:1, done:2};
+  const sorted = [...projTasks].sort((a,b)=>{
+    let av = a[taskSort.key], bv = b[taskSort.key];
+    if(taskSort.key==='priority'){ av = PRIORITY_ORDER[av]??9; bv = PRIORITY_ORDER[bv]??9; }
+    if(taskSort.key==='status'){ av = STATUS_ORDER[av]??9; bv = STATUS_ORDER[bv]??9; }
+    av = av||''; bv = bv||'';
+    if(av<bv) return taskSort.dir==='asc'? -1: 1;
+    if(av>bv) return taskSort.dir==='asc'? 1: -1;
+    return 0;
+  });
+  return `<div class="pane table-wrap">
+    <table class="task-table">
+      <thead><tr>
+        ${cols.map(c=>`<th data-sortkey="${c.key}">${c.label} ${taskSort.key===c.key? (taskSort.dir==='asc'?'▲':'▼') : ''}</th>`).join('')}
+        <th>Colaboradores</th><th>Meta</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${sorted.length? sorted.map(t=>{
+          const pr = PRIORITIES.find(p=>p.v===t.priority)||PRIORITIES[1];
+          const goal = goals.find(g=>g.id===t.goalId);
+          const overdue = t.due && t.due<new Date().toISOString().slice(0,10) && t.status!=='done';
+          return `<tr>
+            <td class="tt-title">${esc(t.title)}</td>
+            <td><span class="who"><span class="av" style="background:${colorFor(t.assignee)}">${initials(t.assignee||'?')}</span>${esc(t.assignee||'Sin asignar')}</span></td>
+            <td><span class="badge ${pr.c}">${pr.l}</span></td>
+            <td style="${overdue?'color:var(--danger);font-weight:700':''}">${t.due? esc(t.due):'—'}</td>
+            <td><select data-taskstatus="${t.id}">${STATUSES.map(s=>`<option value="${s.v}" ${s.v===t.status?'selected':''}>${s.l}</option>`).join('')}</select></td>
+            <td>${(t.members||[]).map(m=>`<span class="av" style="width:20px;height:20px;font-size:9px;background:${colorFor(m)}" title="${esc(m)}">${initials(m)}</span>`).join(' ')||'—'}</td>
+            <td>${goal? `🎯 ${esc(goal.title)}`:'—'}</td>
+            <td><button class="card-del" data-taskdel="${t.id}">Eliminar</button></td>
+          </tr>`;
+        }).join('') : `<tr><td colspan="8"><div class="empty">Sin tareas en este proyecto</div></td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+function wireTaskTableSort(){
+  document.querySelectorAll('[data-sortkey]').forEach(th=>th.addEventListener('click', ()=>{
+    const key = th.dataset.sortkey;
+    if(taskSort.key===key) taskSort.dir = taskSort.dir==='asc'?'desc':'asc';
+    else taskSort = {key, dir:'asc'};
+    renderTasks();
+  }));
 }
 
 function nextRecurrenceDate(dueStr, recurrence){
