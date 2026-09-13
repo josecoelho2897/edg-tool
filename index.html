@@ -37,6 +37,14 @@
   }
   *{box-sizing:border-box;}
   html,body{height:100%;}
+  .theme-toggle-fab{
+    position:fixed;top:16px;right:16px;z-index:45;
+    width:40px;height:40px;border-radius:50%;
+    background:var(--surface-2);border:1px solid var(--border);
+    font-size:17px;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);
+  }
+  .theme-toggle-fab:hover{border-color:var(--text-muted);}
   body{
     margin:0;
     font-family:'Manrope',system-ui,-apple-system,Segoe UI,sans-serif;
@@ -122,7 +130,7 @@
   main{flex:1;display:flex;flex-direction:column;min-width:0;}
   .topbar{
     height:58px;flex:none;border-bottom:1px solid var(--border);display:flex;align-items:center;
-    padding:0 20px;gap:14px;
+    padding:0 60px 0 20px;gap:14px;
   }
   .topbar h2{font-size:15.5px;margin:0;font-weight:800;}
   .topbar .meta{font-size:12px;color:var(--text-muted);}
@@ -374,7 +382,8 @@
     .side{position:absolute;left:0;top:0;bottom:calc(58px + env(safe-area-inset-bottom));z-index:20;width:82vw;max-width:300px;transform:translateX(-100%);transition:transform .15s;box-shadow:8px 0 24px rgba(0,0,0,.4);}
     .side.show{transform:translateX(0);}
     .menu-toggle{display:inline-flex;align-items:center;justify-content:center;min-width:38px;min-height:38px;}
-    .topbar{padding:0 12px;gap:8px;height:52px;}
+    .topbar{padding:0 46px 0 12px;gap:8px;height:52px;}
+    .theme-toggle-fab{width:32px;height:32px;font-size:14px;top:10px;right:10px;}
     .topbar h2{font-size:14px;}
     .searchbox{width:120px;}
     .task-cols{grid-template-columns:1fr;padding:14px;}
@@ -425,6 +434,7 @@
 </style>
 </head>
 <body>
+<button id="themeToggleBtn" class="theme-toggle-fab" title="Cambiar tema">☀️</button>
 <div id="authBg">
   <div class="authbg-grid"></div>
   <div class="authbg-scanline"></div>
@@ -911,12 +921,26 @@ async function sGetCriticalRead(key, shared, retries){
 async function applyTheme(){
   const theme = await sGet('theme', false, 'dark');
   document.body.classList.toggle('light', theme==='light');
+  updateThemeToggleIcon();
+  wireThemeToggle();
+}
+function updateThemeToggleIcon(){
+  const btn = document.getElementById('themeToggleBtn');
+  if(btn) btn.textContent = document.body.classList.contains('light') ? '🌙' : '☀️';
+}
+let themeToggleWired = false;
+function wireThemeToggle(){
+  if(themeToggleWired) return;
+  themeToggleWired = true;
+  const btn = document.getElementById('themeToggleBtn');
+  if(btn) btn.addEventListener('click', toggleTheme);
 }
 async function toggleTheme(){
   const isLight = document.body.classList.contains('light');
   const next = isLight ? 'dark' : 'light';
   document.body.classList.toggle('light', next==='light');
   await sSet('theme', next, false);
+  updateThemeToggleIcon();
 }
 async function init(){
   await applyTheme();
@@ -1491,7 +1515,6 @@ async function openAccountMenu(){
     <div class="modal-actions" style="flex-direction:column;align-items:stretch;gap:8px">
       <button class="btn block" id="menuChangePass">Cambiar mi contraseña</button>
       <button class="btn block" id="menuEditProfile">Editar mi perfil (nombre y color)</button>
-      <button class="btn block" id="menuTheme">${document.body.classList.contains('light')? '🌙 Modo oscuro' : '☀️ Modo claro'}</button>
       <button class="btn block" id="menuTrash">🗑️ Papelera</button>
       <button class="btn block" id="menuExport">Exportar todo (respaldo)</button>
       <button class="btn block" id="menuExportProject">Exportar solo este proyecto</button>
@@ -1513,7 +1536,6 @@ async function openAccountMenu(){
   document.getElementById('menuLogout').addEventListener('click', ()=>{ if(confirm('¿Cerrar sesión?')) logout(); });
   document.getElementById('menuChangePass').addEventListener('click', openChangePasswordModal);
   document.getElementById('menuEditProfile').addEventListener('click', openEditProfileModal);
-  document.getElementById('menuTheme').addEventListener('click', async ()=>{ await toggleTheme(); openAccountMenu(); });
   document.getElementById('menuTrash').addEventListener('click', openTrashModal);
   document.getElementById('menuExport').addEventListener('click', exportAllData);
   document.getElementById('menuExportProject').addEventListener('click', exportProjectData);
