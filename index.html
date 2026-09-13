@@ -2875,7 +2875,16 @@ function openTaskModal(){
     <div class="field"><label>Repetir</label><select id="tRecurrence"><option value="none">No se repite</option><option value="daily">Cada día</option><option value="weekly">Cada semana</option><option value="monthly">Cada mes</option></select></div>
     <div class="field"><label>Depende de (opcional)</label><select id="tDepends"><option value="">Ninguna</option>${projTasks.map(x=>`<option value="${x.id}">${esc(x.title)}</option>`).join('')}</select></div>
     <div class="field"><label>Meta relacionada (opcional)</label><select id="tGoal"><option value="">Ninguna</option>${projGoals.map(g=>`<option value="${g.id}">${esc(g.title)}</option>`).join('')}</select></div>
-    <div class="field"><label>Subtareas (una por línea, opcional)</label><textarea id="tSubtasks" placeholder="Ej. Redactar borrador&#10;Revisar con el equipo"></textarea></div>
+    <div class="field">
+      <button type="button" class="link-btn" id="toggleSubtasksBtn">+ Agregar subtareas (opcional)</button>
+      <div id="subtasksSection" style="display:none;margin-top:10px">
+        <div id="subtaskChips" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="subtaskInput" placeholder="Escribe una subtarea y presiona Enter">
+          <button type="button" class="btn small" id="addSubtaskBtn">Añadir</button>
+        </div>
+      </div>
+    </div>
     ${customFields.map(f=>`<div class="field"><label>${esc(f.name)}</label><input type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" id="cf_${f.id}"></div>`).join('')}
     <div class="modal-actions"><button class="btn ghost" id="tCancel">Cancelar</button><button class="btn primary" id="tSave">Crear tarea</button></div>
   `;
@@ -2883,6 +2892,40 @@ function openTaskModal(){
   document.getElementById('overlay').classList.add('show');
   let priority = 'media';
   const pickedMembers = new Set();
+  let pendingSubtasks = [];
+  function renderSubtaskChips(){
+    const box = document.getElementById('subtaskChips');
+    box.innerHTML = pendingSubtasks.length? pendingSubtasks.map((s,i)=>`
+      <div class="card-row" style="margin:0;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+        <span style="font-size:13px"><b style="color:var(--text-muted)">${i+1}.</b> ${esc(s)}</span>
+        <button type="button" class="card-del" data-rmsubtask="${i}">✕</button>
+      </div>
+    `).join('') : '';
+    box.querySelectorAll('[data-rmsubtask]').forEach(b=>b.addEventListener('click', ()=>{
+      pendingSubtasks.splice(+b.dataset.rmsubtask, 1);
+      renderSubtaskChips();
+    }));
+  }
+  document.getElementById('toggleSubtasksBtn').addEventListener('click', (e)=>{
+    const section = document.getElementById('subtasksSection');
+    const showing = section.style.display!=='none';
+    section.style.display = showing? 'none':'block';
+    e.target.textContent = showing? '+ Agregar subtareas (opcional)' : '− Ocultar subtareas';
+    if(!showing) document.getElementById('subtaskInput').focus();
+  });
+  function addSubtaskFromInput(){
+    const input = document.getElementById('subtaskInput');
+    const text = input.value.trim();
+    if(!text) return;
+    pendingSubtasks.push(text);
+    input.value = '';
+    renderSubtaskChips();
+    input.focus();
+  }
+  document.getElementById('addSubtaskBtn').addEventListener('click', addSubtaskFromInput);
+  document.getElementById('subtaskInput').addEventListener('keydown', e=>{
+    if(e.key==='Enter'){ e.preventDefault(); addSubtaskFromInput(); }
+  });
   document.querySelectorAll('#tMembers .chip-opt').forEach(b=>b.addEventListener('click', ()=>{
     b.classList.toggle('sel');
     if(pickedMembers.has(b.dataset.v)) pickedMembers.delete(b.dataset.v); else pickedMembers.add(b.dataset.v);
@@ -2895,7 +2938,6 @@ function openTaskModal(){
   document.getElementById('tSave').addEventListener('click', async ()=>{
     const title = document.getElementById('tTitle').value.trim();
     if(!title) return;
-    const subLines = document.getElementById('tSubtasks').value.split('\n').map(s=>s.trim()).filter(Boolean);
     tasks = await pGetFresh('tasks', tasks);
     const newTask = {
       id:uid(), title, description:document.getElementById('tDesc').value.trim(),
@@ -2904,7 +2946,7 @@ function openTaskModal(){
       showOnCalendar: document.getElementById('tShowCal').checked,
       recurrence:document.getElementById('tRecurrence').value,
       dependsOn:document.getElementById('tDepends').value||null,
-      subtasks:subLines.map(s=>({text:s,done:false})), comments:[],
+      subtasks:pendingSubtasks.map(s=>({text:s,done:false})), comments:[],
       goalId:document.getElementById('tGoal').value||null, projectId:currentProjectId,
       customValues: Object.fromEntries(customFields.map(f=>[f.id, document.getElementById('cf_'+f.id).value])),
       createdBy:me.name, createdAt:Date.now()
