@@ -22,6 +22,19 @@
     --radius:8px;
     --radius-lg:14px;
   }
+  body.light{
+    --bg:#F4F5F1;
+    --surface:#FFFFFF;
+    --surface-2:#F0F1EC;
+    --surface-3:#E6E7E1;
+    --border:#DBDCD5;
+    --text:#20262A;
+    --text-muted:#6A7278;
+    --accent:#D8912E;
+    --accent-ink:#2E2109;
+    --accent-2:#3F9484;
+    --danger:#C6493D;
+  }
   *{box-sizing:border-box;}
   html,body{height:100%;}
   body{
@@ -548,6 +561,46 @@ async function notifyNewEvent(event){
     );
   }
 }
+
+/* ---------------- automatic due-date reminders ---------------- */
+async function checkDueDateReminders(){
+  if(!me || !sessionKey) return;
+  try{
+    const todayStr = new Date().toISOString().slice(0,10);
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
+    const tomorrowStr = tomorrow.toISOString().slice(0,10);
+    const accessibleIds = new Set(myProjects().map(p=>p.id));
+    const dueSoon = tasks.filter(t =>
+      t.status!=='done' && t.due && accessibleIds.has(t.projectId) &&
+      (t.due===todayStr || t.due===tomorrowStr)
+    );
+    if(!dueSoon.length) return;
+    let sent = await pGetFresh('sentReminders', [], []);
+    let changed = false;
+    for(const t of dueSoon){
+      const key = `${t.id}_${t.due}`;
+      if(sent.includes(key)) continue;
+      sent.push(key); changed = true;
+      const label = t.due===todayStr ? 'vence HOY' : 'vence mañana';
+      const names = [...new Set([t.assignee, ...(t.members||[])].filter(Boolean))];
+      if(!names.length) continue;
+      logNotification({
+        type:'task', title:`⏰ "${t.title}" ${label}`,
+        body:`Fecha límite: ${t.due}`, targetNames:names, projectId:t.projectId, view:'tasks'
+      });
+      for(const name of names){
+        const email = emailFor(name);
+        if(email) await sendEmailNotification(email, name, `Recordatorio: "${t.title}" ${label}`, `Tu tarea "${t.title}" ${label} (${t.due}) en el proyecto "${projects.find(p=>p.id===t.projectId)?.name||''}".`);
+      }
+    }
+    if(changed){
+      if(sent.length>500) sent = sent.slice(sent.length-500);
+      await pSet('sentReminders', sent);
+      updateNotifBadge();
+    }
+  }catch(e){ /* never let reminder bookkeeping break the app */ }
+}
+
 async function sGet(key, shared, fallback){
   if(!shared){
     try{
@@ -724,6 +777,14 @@ async function pSetChecked(key, value, actionLabel){
   }
   return ok;
 }
+async function moveToTrash(type, data, projectId, channelId){
+  try{
+    let trash = await pGet('trash', []);
+    trash.push({id:uid(), type, data, projectId, channelId: channelId||null, deletedBy:me.name, deletedAt:Date.now()});
+    if(trash.length>200) trash = trash.slice(trash.length-200);
+    await pSet('trash', trash);
+  }catch(e){ /* never block a delete over trash bookkeeping */ }
+}
 async function logActivity(action, details, projectId){
   try{
     let log = await pGet('auditLog', []);
@@ -847,7 +908,18 @@ async function sGetCriticalRead(key, shared, retries){
     }
   }
 }
+async function applyTheme(){
+  const theme = await sGet('theme', false, 'dark');
+  document.body.classList.toggle('light', theme==='light');
+}
+async function toggleTheme(){
+  const isLight = document.body.classList.contains('light');
+  const next = isLight ? 'dark' : 'light';
+  document.body.classList.toggle('light', next==='light');
+  await sSet('theme', next, false);
+}
 async function init(){
+  await applyTheme();
   const accountsRead = await sGetCriticalRead('accounts', true);
   if(!accountsRead.ok){
     renderStorageBlockedScreen();
@@ -879,6 +951,8 @@ function startBackgroundLoops(){
   pollingStarted = true;
   setInterval(pollLoop, POLL_MS);
   setInterval(heartbeat, HEARTBEAT_MS);
+  setInterval(checkDueDateReminders, 30*60*1000); // every 30 min
+  setTimeout(checkDueDateReminders, 5000); // once shortly after login
 }
 
 async function ensureRoster(){
@@ -1417,6 +1491,8 @@ async function openAccountMenu(){
     <div class="modal-actions" style="flex-direction:column;align-items:stretch;gap:8px">
       <button class="btn block" id="menuChangePass">Cambiar mi contraseña</button>
       <button class="btn block" id="menuEditProfile">Editar mi perfil (nombre y color)</button>
+      <button class="btn block" id="menuTheme">${document.body.classList.contains('light')? '🌙 Modo oscuro' : '☀️ Modo claro'}</button>
+      <button class="btn block" id="menuTrash">🗑️ Papelera</button>
       <button class="btn block" id="menuExport">Exportar todo (respaldo)</button>
       <button class="btn block" id="menuExportProject">Exportar solo este proyecto</button>
       <button class="btn block" id="menuNotify">${notificationsEnabled? 'Notificaciones activadas ✓':'Activar notificaciones del navegador'}</button>
@@ -1437,6 +1513,8 @@ async function openAccountMenu(){
   document.getElementById('menuLogout').addEventListener('click', ()=>{ if(confirm('¿Cerrar sesión?')) logout(); });
   document.getElementById('menuChangePass').addEventListener('click', openChangePasswordModal);
   document.getElementById('menuEditProfile').addEventListener('click', openEditProfileModal);
+  document.getElementById('menuTheme').addEventListener('click', async ()=>{ await toggleTheme(); openAccountMenu(); });
+  document.getElementById('menuTrash').addEventListener('click', openTrashModal);
   document.getElementById('menuExport').addEventListener('click', exportAllData);
   document.getElementById('menuExportProject').addEventListener('click', exportProjectData);
   document.getElementById('menuNotify').addEventListener('click', enableBrowserNotifications);
@@ -1507,6 +1585,52 @@ function openAdminAddMemberModal(){
   });
 }
 
+async function openTrashModal(){
+  const trash = await pGet('trash', []);
+  const accessibleIds = new Set(myProjects().map(p=>p.id));
+  const mine = trash.filter(t=>accessibleIds.has(t.projectId)).sort((a,b)=>b.deletedAt-a.deletedAt);
+  const html = `
+    <h3>Papelera</h3>
+    <div class="lead">Tareas y mensajes eliminados de tus proyectos. Puedes restaurarlos si fue un error.</div>
+    <div id="trashList" style="max-height:55vh;overflow-y:auto">
+      ${mine.length? mine.map(t=>{
+        const proj = projects.find(p=>p.id===t.projectId);
+        const preview = t.type==='task' ? t.data.title : t.data.text;
+        const icon = t.type==='task' ? '📋' : '💬';
+        return `<div class="card-row" style="padding:10px 0;border-top:1px solid var(--border);align-items:flex-start">
+          <div style="flex:1">
+            <div style="font-size:12.5px;font-weight:700">${icon} ${esc((preview||'').slice(0,70))}</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(proj?.name||'')} · eliminado por ${esc(t.deletedBy)} · ${new Date(t.deletedAt).toLocaleString('es',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
+          </div>
+          <button class="btn small primary" data-restore="${t.id}">Restaurar</button>
+        </div>`;
+      }).join('') : '<div class="empty">La papelera está vacía.</div>'}
+    </div>
+    <div class="modal-actions"><button class="btn ghost" id="trashClose">Cerrar</button></div>
+  `;
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('trashClose').addEventListener('click', closeModal);
+  document.querySelectorAll('[data-restore]').forEach(b=>b.addEventListener('click', async ()=>{
+    let currentTrash = await pGetFresh('trash', trash);
+    const entry = currentTrash.find(x=>x.id===b.dataset.restore);
+    if(!entry) return;
+    if(entry.type==='task'){
+      tasks = await pGetFresh('tasks', tasks);
+      tasks.push(entry.data);
+      if(!(await pSetChecked('tasks', tasks, 'restauración de tarea'))) return;
+    } else if(entry.type==='message'){
+      const msgs = await pGetFresh('messages:'+entry.channelId, messagesCache[entry.channelId]||[], []);
+      msgs.push(entry.data);
+      if(!(await pSetChecked('messages:'+entry.channelId, msgs, 'restauración de mensaje'))) return;
+      messagesCache[entry.channelId] = msgs;
+    }
+    currentTrash = currentTrash.filter(x=>x.id!==entry.id);
+    await pSet('trash', currentTrash);
+    logActivity(entry.type==='task'?'tarea_creada':'mensaje_restaurado', `Restauró ${entry.type==='task'?'la tarea':'un mensaje'} desde la papelera`, entry.projectId);
+    openTrashModal();
+  }));
+}
 function openEditProfileModal(){
   const html = `
     <h3>Editar mi perfil</h3>
@@ -2186,7 +2310,7 @@ const ACTIVITY_LABELS = {
   tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️', tarea_comentario:'💬', campo_creado:'🧩',
   meta_creada:'🆕', meta_progreso:'📈', meta_eliminada:'🗑️',
   evento_creado:'🆕', evento_eliminado:'🗑️', evento_actualizado:'✏️',
-  canal_creado:'🆕', mensaje_eliminado:'🗑️', canal_archivado:'📦',
+  canal_creado:'🆕', mensaje_eliminado:'🗑️', canal_archivado:'📦', mensaje_restaurado:'♻️',
   proyecto_creado:'📁', proyecto_miembro:'👤',
   admin_reset_password:'🔑', admin_rol:'🛡️', admin_eliminacion_cuenta:'❌', admin_codigo_invitacion:'🔐',
   admin_aprobacion:'✅', admin_rechazo:'🚫', admin_creo_cuenta:'👤'
@@ -2589,6 +2713,7 @@ async function deleteMsg(chId, msgId){
   msgs = msgs.filter(x=>x.id!==msgId);
   if(!(await pSetChecked('messages:'+chId, msgs, 'eliminación de mensaje'))) return;
   const ch = channels.find(c=>c.id===chId);
+  if(removed) moveToTrash('message', removed, currentProjectId, chId);
   logActivity('mensaje_eliminado', `Eliminó un mensaje en #${ch?.name||''}: "${(removed?.text||'').slice(0,60)}"`);
   messagesCache[chId]=msgs; renderChat();
 }
@@ -2636,6 +2761,7 @@ function renderTasks(){
     const removed = tasks.find(x=>x.id===b.dataset.taskdel);
     tasks = tasks.filter(x=>x.id!==b.dataset.taskdel);
     if(!(await pSetChecked('tasks', tasks, 'eliminación de tarea'))){ tasks = backup; return; }
+    if(removed) moveToTrash('task', removed, removed.projectId);
     logActivity('tarea_eliminada', `Eliminó la tarea "${removed?.title||''}"`);
     renderTasks();
   }));
