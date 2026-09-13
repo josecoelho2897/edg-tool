@@ -2742,6 +2742,14 @@ async function changeTaskStatus(taskId, newStatus){
       return;
     }
   }
+  if(newStatus==='done' && t.subtasks && t.subtasks.length){
+    const doneCount = t.subtasks.filter(s=>s.done).length;
+    if(doneCount < t.subtasks.length){
+      alert(`Esta tarea tiene subtareas sin completar (${doneCount}/${t.subtasks.length}). Complétalas todas antes de marcarla como Hecho.`);
+      renderTasks();
+      return;
+    }
+  }
   const prev = t.status;
   t.status = newStatus;
   let newOccurrence = null;
@@ -2789,8 +2797,9 @@ function renderTaskCard(t){
       ${filledCFields.map(f=>`<div style="font-size:11px;color:var(--text-muted)"><b style="color:var(--text)">${esc(f.name)}:</b> ${esc(t.customValues[f.id])}</div>`).join('')}
     </div>`:''}
     ${subtasks.length? `<div style="margin-top:8px">
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Subtareas ${subDone}/${subtasks.length}</div>
-      ${subtasks.map((s,i)=>`<div class="kr ${s.done?'done':''}" style="padding:3px 0;border-top:none"><input type="checkbox" ${s.done?'checked':''} data-subtoggle="${t.id}|${i}"><span style="font-size:12px">${esc(s.text)}</span></div>`).join('')}
+      <div class="card-row" style="margin-top:0"><span style="font-size:11px;color:var(--text-muted)">Subtareas</span><span style="font-size:11px;color:${subDone===subtasks.length?'var(--accent-2)':'var(--text-muted)'};font-weight:800">${subDone}/${subtasks.length}</span></div>
+      <div class="progress-track" style="margin:4px 0 6px"><div class="progress-fill" style="width:${Math.round(subDone/subtasks.length*100)}%;background:${subDone===subtasks.length?'var(--accent-2)':'var(--accent)'}"></div></div>
+      ${subtasks.map((s,i)=>`<div class="kr ${s.done?'done':''}" style="padding:3px 0;border-top:none"><input type="checkbox" ${s.done?'checked':''} data-subtoggle="${t.id}|${i}"><span style="font-size:12px"><b style="color:var(--text-muted);font-weight:700">${i+1}.</b> ${esc(s.text)}</span></div>`).join('')}
     </div>`:''}
     <div class="card-row">
       <select data-taskstatus="${t.id}">${STATUSES.map(s=>`<option value="${s.v}" ${s.v===t.status?'selected':''}>${s.l}</option>`).join('')}</select>
@@ -2923,6 +2932,13 @@ function openTaskDetailModal(taskId){
       ${goal? ` · 🎯 ${esc(goal.title)}`:''}
     </div>
     ${t.description? `<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px">${esc(t.description)}</div>`:''}
+    ${t.subtasks && t.subtasks.length? `
+      <div class="card-row" style="margin-top:0"><span style="font-size:12px;color:var(--text-muted);font-weight:700">Subtareas</span><span style="font-size:12px;font-weight:800;color:${t.subtasks.filter(s=>s.done).length===t.subtasks.length?'var(--accent-2)':'var(--text-muted)'}">${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length}</span></div>
+      <div class="progress-track" style="margin:4px 0 10px"><div class="progress-fill" style="width:${Math.round(t.subtasks.filter(s=>s.done).length/t.subtasks.length*100)}%"></div></div>
+      <div style="margin-bottom:10px">
+        ${t.subtasks.map((s,i)=>`<div class="kr ${s.done?'done':''}"><input type="checkbox" ${s.done?'checked':''} data-detailsubtoggle="${i}"><span style="font-size:13px"><b style="color:var(--text-muted)">${i+1}.</b> ${esc(s.text)}</span></div>`).join('')}
+      </div>
+    `:''}
     <hr style="border-color:var(--border);margin:12px 0">
     <div style="font-size:12.5px;color:var(--text-muted);font-weight:700;margin-bottom:8px">Comentarios</div>
     <div id="taskCommentList" style="max-height:35vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
@@ -2942,6 +2958,16 @@ function openTaskDetailModal(taskId){
   document.getElementById('modalBody').innerHTML = html;
   document.getElementById('overlay').classList.add('show');
   document.getElementById('tdClose').addEventListener('click', closeModal);
+  document.querySelectorAll('[data-detailsubtoggle]').forEach(cb=>cb.addEventListener('change', async ()=>{
+    const idx = +cb.dataset.detailsubtoggle;
+    tasks = await pGetFresh('tasks', tasks);
+    const task = tasks.find(x=>x.id===taskId);
+    if(!task) return;
+    const prev = task.subtasks[idx].done;
+    task.subtasks[idx].done = cb.checked;
+    if(!(await pSetChecked('tasks', tasks, 'subtarea'))){ task.subtasks[idx].done = prev; return; }
+    openTaskDetailModal(taskId);
+  }));
   document.getElementById('tdSend').addEventListener('click', async ()=>{
     const input = document.getElementById('taskCommentInput');
     const text = input.value.trim();
