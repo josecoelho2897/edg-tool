@@ -21,6 +21,7 @@
     --danger:#E2665A;
     --radius:8px;
     --radius-lg:14px;
+    --grid-tint:rgba(95,179,163,.055);
   }
   body.light{
     --bg:#F4F5F1;
@@ -34,6 +35,7 @@
     --accent-ink:#2E2109;
     --accent-2:#3F9484;
     --danger:#C6493D;
+    --grid-tint:rgba(63,148,132,.06);
   }
   *{box-sizing:border-box;}
   html,body{height:100%;}
@@ -62,14 +64,24 @@
   /* --- rail --- */
   .rail{
     width:76px;flex:none;background:var(--surface);
+    background-image:linear-gradient(rgba(95,179,163,.05) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(95,179,163,.05) 1px, transparent 1px);
+    background-size:19px 19px;
     border-right:1px solid var(--border);
     display:flex;flex-direction:column;align-items:center;
     padding:16px 0;gap:6px;
+    position:relative;
+  }
+  .rail::after{
+    content:"";position:absolute;top:0;left:0;right:0;height:2px;
+    background:linear-gradient(90deg, transparent, var(--accent-2), transparent);
+    opacity:.5;
   }
   .rail-logo{
     width:38px;height:38px;border-radius:11px;background:var(--accent);
     color:var(--accent-ink);display:flex;align-items:center;justify-content:center;
     font-weight:800;font-size:16px;margin-bottom:14px;
+    box-shadow:0 0 16px rgba(232,163,61,.4);
   }
   .rail-btn{
     width:56px;padding:8px 2px;border:none;background:transparent;color:var(--text-muted);
@@ -97,8 +109,23 @@
     width:240px;flex:none;background:var(--surface);border-right:1px solid var(--border);
     display:flex;flex-direction:column;overflow:hidden;
   }
-  .side-head{padding:18px 16px 10px;}
-  .side-head h1{font-size:15px;margin:0 0 8px;font-weight:800;letter-spacing:-.01em;}
+  .side-head{padding:18px 16px 10px;position:relative;overflow:hidden;}
+  .side-head::before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:linear-gradient(rgba(95,179,163,.05) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(95,179,163,.05) 1px, transparent 1px);
+    background-size:22px 22px;
+    -webkit-mask-image:linear-gradient(to bottom, black, transparent);
+            mask-image:linear-gradient(to bottom, black, transparent);
+  }
+  .side-head > *{position:relative;}
+  .side-head h1{font-size:15px;margin:0 0 8px;font-weight:800;letter-spacing:-.01em;position:relative;padding-left:14px;}
+  .side-head h1::before{
+    content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+    width:6px;height:6px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 8px 2px var(--accent);animation:pulseDot 2.4s ease-in-out infinite;
+  }
+  @keyframes pulseDot{0%,100%{opacity:.5;transform:translateY(-50%) scale(.85);}50%{opacity:1;transform:translateY(-50%) scale(1.15);}}
   .proj-switch{display:flex;gap:6px;align-items:center;}
   .proj-switch select{
     flex:1;background:var(--surface-2);border:1px solid var(--border);color:var(--text);
@@ -127,7 +154,14 @@
   .mini-av:first-child{margin-left:0;}
 
   /* --- main --- */
-  main{flex:1;display:flex;flex-direction:column;min-width:0;}
+  main{
+    flex:1;display:flex;flex-direction:column;min-width:0;
+    background-color:var(--bg);
+    background-image:
+      linear-gradient(var(--grid-tint) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-tint) 1px, transparent 1px);
+    background-size:44px 44px;
+  }
   .topbar{
     height:58px;flex:none;border-bottom:1px solid var(--border);display:flex;align-items:center;
     padding:0 60px 0 20px;gap:14px;
@@ -143,7 +177,9 @@
   .btn{
     border:1px solid var(--border);background:var(--surface-2);color:var(--text);
     padding:8px 14px;border-radius:8px;font-size:13px;font-weight:700;
+    transition:border-color .15s ease, background .15s ease, filter .15s ease, transform .1s ease;
   }
+  .btn:active{transform:scale(.97);}
   .btn:hover{border-color:var(--text-muted);}
   .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
   .btn.primary:hover{filter:brightness(1.06);}
@@ -185,7 +221,8 @@
     .authbg-scanline{ animation:none !important; }
   }
 
-  .content{flex:1;overflow-y:auto;}
+  @keyframes fadeInUp{ from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:translateY(0);} }
+  .content{flex:1;overflow-y:auto;animation:fadeInUp .22s ease;}
 
   /* --- chat --- */
   .pinned-bar{padding:8px 20px;background:var(--surface);border-bottom:1px solid var(--border);font-size:12px;color:var(--text-muted);display:none;}
@@ -321,11 +358,20 @@
   .status.on{color:var(--accent-2);}
 
   .empty{color:var(--text-muted);font-size:13px;padding:40px;text-align:center;}
+  .content-fade-in{animation:contentFadeIn .25s ease;}
+  @keyframes contentFadeIn{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:translateY(0);}}
 
   /* --- modal --- */
-  .overlay{position:fixed;inset:0;background:rgba(6,9,10,.6);display:none;align-items:center;justify-content:center;z-index:50;}
-  .overlay.show{display:flex;}
-  .modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);width:420px;max-width:92vw;max-height:88vh;overflow-y:auto;padding:22px;}
+  .overlay{
+    position:fixed;inset:0;background:rgba(6,9,10,.6);display:flex;align-items:center;justify-content:center;z-index:50;
+    opacity:0;visibility:hidden;transition:opacity .18s ease;
+  }
+  .overlay.show{opacity:1;visibility:visible;}
+  .modal{
+    background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);width:420px;max-width:92vw;max-height:88vh;overflow-y:auto;padding:22px;
+    transform:translateY(10px) scale(.97);transition:transform .2s cubic-bezier(.2,.9,.3,1.2);
+  }
+  .overlay.show .modal{transform:translateY(0) scale(1);}
   .modal h3{margin:0 0 6px;font-size:16px;}
   .modal .lead{font-size:12.5px;color:var(--text-muted);margin-bottom:16px;line-height:1.5;}
   .field{margin-bottom:12px;}
@@ -363,7 +409,7 @@
       flex-direction:row; padding-left:4px; padding-right:4px; padding-top:0; gap:0;
       overflow-x:auto; -webkit-overflow-scrolling:touch;
       border-top:1px solid var(--border); border-right:none; z-index:40;
-      justify-content:flex-start; align-items:stretch; background:var(--surface);
+      justify-content:flex-start; align-items:stretch; background-color:var(--surface);
     }
     .rail-logo{display:none;}
     .rail-spacer{display:none;}
@@ -403,7 +449,8 @@
     .composer{padding:10px 12px 14px;}
     .modal{width:94vw;padding:16px;max-height:80dvh;}
     .overlay{align-items:flex-end;}
-    .overlay .modal{border-radius:16px 16px 0 0;width:100%;max-width:100%;}
+    .overlay .modal{border-radius:16px 16px 0 0;width:100%;max-width:100%;transform:translateY(100%);}
+    .overlay.show .modal{transform:translateY(0);}
     .cal-cells{grid-auto-rows:64px;}
     .cal-cell{padding:3px;font-size:9.5px;}
     .cal-cell .n{font-size:11px;}
@@ -1132,7 +1179,7 @@ async function openNotificationCenterModal(){
           ${n.body? `<span style="font-size:12px;color:var(--text-muted)">${esc(n.body.slice(0,90))}</span>`:''}
           <span style="font-size:10.5px;color:var(--text-muted)">${new Date(n.ts).toLocaleString('es',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span>
         </div>
-      `).join('') : '<div class="empty">Sin notificaciones todavía.</div>'}
+      `).join('') : '<div class="empty">Todo tranquilo por aquí. En cuanto algo te toque, aparece en este ícono.</div>'}
     </div>
     <div class="modal-actions"><button class="btn ghost" id="notifClose">Cerrar</button></div>
   `;
@@ -1629,7 +1676,7 @@ async function openTrashModal(){
           </div>
           <button class="btn small primary" data-restore="${t.id}">Restaurar</button>
         </div>`;
-      }).join('') : '<div class="empty">La papelera está vacía.</div>'}
+      }).join('') : '<div class="empty">Vacía y en orden — nada por restaurar.</div>'}
     </div>
     <div class="modal-actions"><button class="btn ghost" id="trashClose">Cerrar</button></div>
   `;
@@ -1710,7 +1757,7 @@ function openPendingApprovalsModal(){
             <button class="card-del" data-reject="${esc(u)}">Rechazar</button>
           </span>
         </div>
-      `).join('') : '<div class="empty">No hay cuentas pendientes.</div>'}
+      `).join('') : '<div class="empty">Bandeja despejada — nadie esperando aprobación.</div>'}
     </div>
     <div class="modal-actions"><button class="btn ghost" id="pendClose">Cerrar</button></div>
   `;
@@ -1759,7 +1806,7 @@ function openManageAdminsModal(){
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" data-adm="${esc(u)}" ${a.isAdmin?'checked':''}> Administrador</label>
           <button class="card-del" data-deluser="${esc(u)}">Eliminar cuenta</button>
         </div>
-      `).join('') : '<div class="empty">No hay otros miembros todavía.</div>'}
+      `).join('') : '<div class="empty">Por ahora eres compañía de ti mismo — invita a alguien más.</div>'}
     </div>
     <div class="modal-actions"><button class="btn ghost" id="admClose">Cerrar</button></div>
   `;
@@ -2006,7 +2053,7 @@ function openResetOtherModal(){
     <div class="modal-actions"><button class="btn ghost" id="roCancel">Cancelar</button><button class="btn primary" id="roSave">Restablecer</button></div>
   `;
   document.getElementById('modalBody').innerHTML = html;
-  if(others.length===0){ document.getElementById('modalBody').innerHTML = '<h3>Restablecer contraseña</h3><div class="empty">No hay otros miembros todavía.</div><div class="modal-actions"><button class="btn ghost" id="roCancel2">Cerrar</button></div>'; document.getElementById('roCancel2').addEventListener('click', closeModal); return; }
+  if(others.length===0){ document.getElementById('modalBody').innerHTML = '<h3>Restablecer contraseña</h3><div class="empty">Por ahora eres compañía de ti mismo — invita a alguien más.</div><div class="modal-actions"><button class="btn ghost" id="roCancel2">Cerrar</button></div>'; document.getElementById('roCancel2').addEventListener('click', closeModal); return; }
   document.getElementById('roCancel').addEventListener('click', closeModal);
   document.getElementById('roSave').addEventListener('click', async ()=>{
     const user = document.getElementById('roUser').value;
@@ -2064,7 +2111,7 @@ function renderShell(){
     <div class="side" id="side"></div>
     <main>
       <div class="topbar" id="topbar"></div>
-      <div class="content" id="content"></div>
+      <div class="content content-fade-in" id="content"></div>
     </main>
   `;
   document.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{
@@ -2137,7 +2184,7 @@ function renderSideOnly(){
       return `<div class="side-item ${!currentDMWith && c.id===currentChannelId?'active':''} ${unread?'unread':''}" data-ch="${c.id}">
         <span class="dot" style="${mentioned?'background:var(--danger)':''}"></span># ${esc(c.name)}${mentioned? ' <span style="color:var(--danger);font-size:10px;font-weight:800">@</span>':''}
       </div>`;
-    }).join('') || `<div class="empty">Sin canales aún</div>`;
+    }).join('') || `<div class="empty">Ni un canal todavía — crea el primero y arranca la conversación.</div>`;
     list.querySelectorAll('[data-ch]').forEach(el=>el.addEventListener('click', async ()=>{
       currentDMWith = null;
       currentChannelId = el.dataset.ch;
@@ -2170,7 +2217,7 @@ function renderSideOnly(){
       return `<div class="side-item ${currentDMWith===r.username?'active':''} ${unread?'unread':''}" data-dm="${esc(r.username)}">
         <span class="dot"></span><span class="mini-av" style="background:${r.color};margin:0 6px 0 0">${initials(r.name)}</span>${esc(r.name)}
       </div>`;
-    }).join('') || `<div class="empty">No hay otros miembros todavía</div>`;
+    }).join('') || `<div class="empty">Este equipo eres tú, por ahora. Invita a alguien.</div>`;
     dmList.querySelectorAll('[data-dm]').forEach(el=>el.addEventListener('click', async ()=>{
       currentDMWith = el.dataset.dm;
       reads['dm:'+currentDMWith] = Date.now();
@@ -2358,7 +2405,7 @@ function renderDashboard(){
                 <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(g.owner||'Sin encargado')}</div>
               </div>
             </div>
-          `).join('') : '<div class="empty">Sin metas todavía</div>'}
+          `).join('') : '<div class="empty">Ninguna meta en la mira — hora de apuntar a algo.</div>'}
         </div>
       </div>
 
@@ -2370,7 +2417,7 @@ function renderDashboard(){
               <div class="d">${fmtDateShort(new Date(e.date+'T00:00:00').getTime())}${e.time? ' · '+e.time:''}</div>
               <div class="t">${esc(e.title)}</div>
             </div>
-          `).join('') : '<div class="empty" style="padding:10px 0">Sin eventos próximos</div>'}
+          `).join('') : '<div class="empty" style="padding:10px 0">El calendario está libre por ahora.</div>'}
         </div>
 
         <h3 style="font-size:13px;color:var(--text-muted);margin:0 0 10px">Actividad reciente</h3>
@@ -2381,7 +2428,7 @@ function renderDashboard(){
               <div class="t" style="font-weight:700">${esc(m.author)}</div>
               <div class="a">${esc(m.text.slice(0,70))}${m.text.length>70?'…':''}</div>
             </div>
-          `).join('') : '<div class="empty" style="padding:10px 0">Sin actividad todavía</div>'}
+          `).join('') : '<div class="empty" style="padding:10px 0">Sin novedades por el momento.</div>'}
         </div>
       </div>
     </div>
@@ -2415,7 +2462,7 @@ async function renderActivity(){
           </div>
           <div style="font-size:12.5px;color:var(--text-muted);margin-top:3px">${esc(e.details)}</div>
         </div>
-      `).join('') : '<div class="empty">Sin actividad registrada todavía.</div>'}
+      `).join('') : '<div class="empty">Todavía no ha pasado nada que contar. En cuanto el equipo se mueva, queda registrado aquí.</div>'}
     </div>
   </div>`;
 }
@@ -2458,7 +2505,7 @@ async function openGlobalSearchModal(){
     const goalHits = allGoals.filter(g=>(g.title+' '+(g.description||'')).toLowerCase().includes(ql));
     const eventHits = allEvents.filter(e=>(e.title+' '+(e.description||'')).toLowerCase().includes(ql));
     const total = msgHits.length+taskHits.length+goalHits.length+eventHits.length;
-    if(total===0){ results.innerHTML = '<div class="empty" style="padding:16px 0">Sin resultados.</div>'; return; }
+    if(total===0){ results.innerHTML = '<div class="empty" style="padding:16px 0">Nada por aquí. Prueba con otras palabras.</div>'; return; }
     results.innerHTML = `
       ${msgHits.length? `<div class="hint" style="margin:10px 0 4px">Mensajes (${msgHits.length})</div>` + msgHits.slice(0,8).map(m=>`
         <div class="side-item" data-gopath="chat|${m.channelId}|${m.projectId}" style="align-items:flex-start;flex-direction:column;gap:2px">
@@ -2830,7 +2877,7 @@ function renderTasks(){
         <div class="task-col">
           <h3>${s.l} <span>${projTasks.filter(t=>t.status===s.v).length}</span></h3>
           <div class="task-col-list" data-coldrop="${s.v}">
-            ${projTasks.filter(t=>t.status===s.v).sort((a,b)=>(a.due||'9999').localeCompare(b.due||'9999')).map(renderTaskCard).join('') || '<div class="empty" style="padding:16px">Sin tareas</div>'}
+            ${projTasks.filter(t=>t.status===s.v).sort((a,b)=>(a.due||'9999').localeCompare(b.due||'9999')).map(renderTaskCard).join('') || `<div class="empty" style="padding:16px">${s.v==='todo'?'Nada por aquí — arrastra o crea la primera tarea':s.v==='doing'?'Nada en curso por ahora':'Nada terminado todavía, ¡vamos por la primera!'}</div>`}
           </div>
         </div>
       `).join('')}
@@ -2917,7 +2964,7 @@ function renderTaskTable(projTasks){
             ${cFields.map(f=>`<td>${t.customValues && t.customValues[f.id]? esc(t.customValues[f.id]) : '—'}</td>`).join('')}
             <td><button class="card-del" data-taskdel="${t.id}">Eliminar</button></td>
           </tr>`;
-        }).join('') : `<tr><td colspan="${8+cFields.length}"><div class="empty">Sin tareas en este proyecto</div></td></tr>`}
+        }).join('') : `<tr><td colspan="${8+cFields.length}"><div class="empty">Todavía no hay tareas aquí. Crea la primera arriba.</div></td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -3034,7 +3081,7 @@ function openCustomFieldsModal(){
           <span>${esc(f.name)} <span class="team-tag">${f.type==='number'?'Número':f.type==='date'?'Fecha':'Texto'}</span></span>
           <button class="card-del" data-cfdel="${f.id}">Eliminar</button>
         </div>
-      `).join('') : '<div class="empty">Sin campos personalizados todavía.</div>'}
+      `).join('') : '<div class="empty">Sin campos propios todavía — agrega el primero abajo.</div>'}
     </div>
     <hr style="border-color:var(--border);margin:12px 0">
     <div class="field"><label>Nombre del campo nuevo</label><input type="text" id="cfName" placeholder="Ej. Presupuesto"></div>
@@ -3200,7 +3247,7 @@ function openTaskDetailModal(taskId){
             <div style="font-size:13px">${linkifyAndMention(c.text)}</div>
           </div>
         </div>
-      `).join('') : '<div class="empty" style="padding:10px 0">Sin comentarios todavía.</div>'}
+      `).join('') : '<div class="empty" style="padding:10px 0">Silencio total aquí — sé el primero en comentar.</div>'}
     </div>
     <div class="field"><textarea id="taskCommentInput" placeholder="Escribe un comentario..." rows="2"></textarea></div>
     <div class="modal-actions"><button class="btn ghost" id="tdClose">Cerrar</button><button class="btn primary" id="tdSend">Comentar</button></div>
@@ -3250,7 +3297,7 @@ function renderGoals(){
   const content = document.getElementById('content');
   const projGoals = goals.filter(g=>g.projectId===currentProjectId);
   content.innerHTML = `<div class="pane"><div class="grid-cards">
-    ${projGoals.length? projGoals.map(renderGoalCard).join('') : '<div class="empty">Aún no hay metas definidas en este proyecto.</div>'}
+    ${projGoals.length? projGoals.map(renderGoalCard).join('') : '<div class="empty">Todavía no han puesto la mira en nada — define la primera meta del proyecto.</div>'}
   </div></div>`;
 
   content.querySelectorAll('[data-krtoggle]').forEach(cb=>cb.addEventListener('change', async ()=>{
@@ -3393,7 +3440,7 @@ function renderCalendar(){
           ${e.attendees?.length? `<div class="a">${e.attendees.map(esc).join(', ')}</div>`:'<div class="a">👥 Todo el proyecto</div>'}
           <a href="${googleCalendarUrl(e)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent-2);text-decoration:none;display:inline-block;margin-top:4px">📅 Agregar a Google Calendar</a>
         </div>
-      `).join('') : '<div class="empty">Sin eventos próximos</div>'}
+      `).join('') : '<div class="empty">Nada agendado todavía — el calendario espera su primer evento.</div>'}
     </div>
   </div>`;
 
@@ -3437,7 +3484,7 @@ function openDayModal(dateKey){
             <button class="card-del" data-evdel="${e.id}">Eliminar</button>
           </div>
         </div>
-      `).join('') : '<div class="empty" style="padding:10px 0">Sin eventos este día</div>'}
+      `).join('') : '<div class="empty" style="padding:10px 0">Día libre — sin eventos programados.</div>'}
     </div>
     <hr style="border-color:var(--border);margin:14px 0">
     <div id="eFormTitle" style="font-size:12.5px;color:var(--text-muted);font-weight:700;margin-bottom:8px">Nuevo evento</div>
