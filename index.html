@@ -661,6 +661,51 @@ async function checkDueDateReminders(){
   }catch(e){ /* never let reminder bookkeeping break the app */ }
 }
 
+/* ---------------- weekly digest (computed summary, no AI writing involved) ---------------- */
+function buildProjectSummaryText(proj){
+  const projTasks = tasks.filter(t=>t.projectId===proj.id);
+  const doneCount = projTasks.filter(t=>t.status==='done').length;
+  const todayStr = new Date().toISOString().slice(0,10);
+  const weekAhead = new Date(); weekAhead.setDate(weekAhead.getDate()+7);
+  const weekAheadStr = weekAhead.toISOString().slice(0,10);
+  const overdue = projTasks.filter(t=>t.due && t.due<todayStr && t.status!=='done');
+  const projGoals = goals.filter(g=>g.projectId===proj.id);
+  const avgGoal = projGoals.length? Math.round(projGoals.reduce((s,g)=>s+(g.progress||0),0)/projGoals.length) : null;
+  const upcomingEvents = events.filter(e=>e.projectId===proj.id && e.date>=todayStr && e.date<=weekAheadStr).sort((a,b)=>a.date.localeCompare(b.date));
+  const projCohorts = cohorts.filter(c=>c.projectId===proj.id);
+
+  const lines = [`${proj.name}`, `------------------------`];
+  lines.push(`Tareas: ${doneCount}/${projTasks.length} completadas${overdue.length? `, ${overdue.length} vencidas (${overdue.map(t=>t.title).join(', ')})`:''}`);
+  if(projGoals.length) lines.push(`Metas: progreso promedio ${avgGoal}% (${projGoals.length} activa(s))`);
+  if(upcomingEvents.length) lines.push(`Próximos 7 días: ${upcomingEvents.map(e=>`${e.title} (${e.date})`).join(', ')}`);
+  projCohorts.forEach(c=>{
+    const avgAtt = c.participants.length? Math.round(c.participants.reduce((s,p)=>s+cohortAttendancePct(c,p.id),0)/c.participants.length) : 0;
+    lines.push(`Cohorte "${c.name}": ${c.participants.length} participante(s), ${avgAtt}% asistencia promedio`);
+  });
+  return lines.join('\n');
+}
+async function sendWeeklyDigestNow(){
+  const email = accounts[currentUsername]?.email;
+  if(!email) return {ok:false, reason:'sin-correo'};
+  const accessible = myProjects();
+  if(!accessible.length) return {ok:false, reason:'sin-proyectos'};
+  const body = accessible.map(buildProjectSummaryText).join('\n\n');
+  await sendEmailNotification(email, me.name, `Resumen semanal — ${new Date().toISOString().slice(0,10)}`, body);
+  return {ok:true};
+}
+async function checkWeeklyDigest(){
+  if(!me || !sessionKey || !isAdmin) return;
+  try{
+    const now = new Date();
+    if(now.getDay()!==1) return; // Monday only
+    const todayStr = now.toISOString().slice(0,10);
+    const lastSent = await sGet('lastDigestSentDate', false, null);
+    if(lastSent===todayStr) return;
+    const result = await sendWeeklyDigestNow();
+    if(result.ok) await sSet('lastDigestSentDate', todayStr, false);
+  }catch(e){ /* never let digest bookkeeping break the app */ }
+}
+
 async function sGet(key, shared, fallback){
   if(!shared){
     try{
@@ -1028,6 +1073,7 @@ function startBackgroundLoops(){
   setInterval(pollLoop, POLL_MS);
   setInterval(heartbeat, HEARTBEAT_MS);
   setInterval(checkDueDateReminders, 30*60*1000); // every 30 min
+  setInterval(checkWeeklyDigest, 30*60*1000); // checks if it's Monday, sends once
   setTimeout(checkDueDateReminders, 5000); // once shortly after login
 }
 
@@ -1574,6 +1620,7 @@ async function openAccountMenu(){
       <button class="btn block" id="menuExportProject">Exportar solo este proyecto</button>
       <button class="btn block" id="menuNotify">${notificationsEnabled? 'Notificaciones activadas ✓':'Activar notificaciones del navegador'}</button>
       ${isAdmin? `<button class="btn block" id="menuAddMember">+ Agregar miembro directamente</button>`:''}
+      ${isAdmin? `<button class="btn block" id="menuDigestNow">📧 Enviar resumen semanal ahora</button>`:''}
       ${isAdmin? `<button class="btn block" id="menuPending">Aprobar cuentas pendientes${pendingCount? ` (${pendingCount})`:''}</button>`:''}
       ${isAdmin? `<button class="btn block" id="menuResetOther">Restablecer contraseña de un miembro</button>`:''}
       ${isMaster? `<button class="btn block" id="menuManageAdmins">Gestionar miembros</button>`:''}
@@ -1596,6 +1643,15 @@ async function openAccountMenu(){
   document.getElementById('menuNotify').addEventListener('click', enableBrowserNotifications);
   const addMemberBtn = document.getElementById('menuAddMember');
   if(addMemberBtn) addMemberBtn.addEventListener('click', openAdminAddMemberModal);
+  const digestBtn = document.getElementById('menuDigestNow');
+  if(digestBtn) digestBtn.addEventListener('click', async ()=>{
+    digestBtn.disabled = true; digestBtn.textContent = 'Enviando...';
+    const result = await sendWeeklyDigestNow();
+    if(result.ok) alert('Resumen enviado a tu correo.');
+    else if(result.reason==='sin-correo') alert('No tienes un correo guardado en tu perfil. Agrégalo en "Editar mi perfil" primero.');
+    else alert('No se pudo enviar (sin proyectos accesibles).');
+    digestBtn.disabled = false; digestBtn.textContent = '📧 Enviar resumen semanal ahora';
+  });
   const pendingBtn = document.getElementById('menuPending');
   if(pendingBtn) pendingBtn.addEventListener('click', openPendingApprovalsModal);
   const resetBtn = document.getElementById('menuResetOther');
