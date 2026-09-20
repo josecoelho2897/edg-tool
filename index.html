@@ -875,6 +875,8 @@ let messagesCache = {};
 let tasks = [];
 let goals = [];
 let events = [];
+let cohorts = [];
+let currentCohortId = null;
 let reads = {};
 let workspaceName = "Espacio de equipo";
 
@@ -1079,6 +1081,7 @@ async function pollLoop(){
     tasks = await pGetFresh('tasks', tasks);
     goals = await pGetFresh('goals', goals);
     events = await pGetFresh('events', events);
+    cohorts = await pGetFresh('cohorts', cohorts);
 
     // Re-check right before touching the screen — typing may have started during the fetches above.
     const activeElNow = document.activeElement;
@@ -1491,6 +1494,7 @@ async function onLoggedIn(){
   tasks = await pGet('tasks', []);
   goals = await pGet('goals', []);
   events = await pGet('events', []);
+  cohorts = await pGet('cohorts', []);
   if(projects.length===0){
     const generalId = uid();
     projects = [{id:generalId, name:'General', description:'Espacio compartido para todo el equipo', isGeneral:true, members:[], createdBy:me.name, createdAt:Date.now()}];
@@ -2086,6 +2090,7 @@ const NAV = [
   {v:'calendar', label:'Calendario', icon:'<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8 3v4M16 3v4"/>'},
   {v:'team', label:'Equipo', icon:'<circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="8" r="2.5"/>'},
   {v:'activity', label:'Actividad', icon:'<path d="M3 12h4l2-7 4 14 2-7h6"/>'},
+  {v:'cohorts', label:'Formación', icon:'<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M5 10v5c0 1.5 3 3 7 3s7-1.5 7-3v-5"/>'},
 ];
 
 function renderShell(){
@@ -2259,6 +2264,13 @@ function renderSideOnly(){
         Quién hizo qué y cuándo en este proyecto. No incluye cada mensaje de chat, solo eliminaciones.
       </div>`;
     wireProjectSwitcher();
+  } else if(view==='cohorts'){
+    side.innerHTML = header + `
+      <div class="sub" style="padding:0 16px 8px">Formación</div>
+      <div style="padding:0 16px;color:var(--text-muted);font-size:12.5px;line-height:1.6">
+        Cohortes, participantes, asistencia, entregas y evaluaciones de los programas de este proyecto.
+      </div>`;
+    wireProjectSwitcher();
   }
 }
 
@@ -2271,6 +2283,7 @@ function renderMain(isPoll){
   if(view==='calendar') return renderCalendar();
   if(view==='team') return renderTeam();
   if(view==='activity') return renderActivity();
+  if(view==='cohorts') return renderCohorts();
 }
 
 /* ================= DASHBOARD ================= */
@@ -2437,6 +2450,7 @@ function renderDashboard(){
 /* ================= ACTIVITY ================= */
 const ACTIVITY_LABELS = {
   tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️', tarea_comentario:'💬', campo_creado:'🧩',
+  cohorte_creada:'🎓', cohorte_eliminada:'🗑️',
   meta_creada:'🆕', meta_progreso:'📈', meta_eliminada:'🗑️',
   evento_creado:'🆕', evento_eliminado:'🗑️', evento_actualizado:'✏️',
   canal_creado:'🆕', mensaje_eliminado:'🗑️', canal_archivado:'📦', mensaje_restaurado:'♻️',
@@ -2465,6 +2479,374 @@ async function renderActivity(){
       `).join('') : '<div class="empty">Todavía no ha pasado nada que contar. En cuanto el equipo se mueva, queda registrado aquí.</div>'}
     </div>
   </div>`;
+}
+
+/* ================= COHORTS / FORMACIÓN ================= */
+function cohortAttendancePct(cohort, participantId){
+  if(!cohort.sessions.length) return 0;
+  const present = cohort.sessions.filter(s=>s.attendance && s.attendance[participantId]===true).length;
+  return Math.round(present/cohort.sessions.length*100);
+}
+function cohortSubmissionsInfo(cohort, participantId){
+  const total = cohort.assignments.length;
+  const done = cohort.assignments.filter(a=>a.submissions && a.submissions[participantId]==='submitted').length;
+  return {done, total};
+}
+function cohortAvgScore(cohort, participantId){
+  const scores = cohort.evaluations.map(e=>e.scores && e.scores[participantId]).filter(v=>v!==undefined && v!==null && v!=='');
+  if(!scores.length) return null;
+  const nums = scores.map(Number).filter(n=>!isNaN(n));
+  if(!nums.length) return null;
+  return Math.round(nums.reduce((a,b)=>a+b,0)/nums.length*10)/10;
+}
+function cohortIsCompleted(cohort, participantId){
+  if(cohort.manualCompletion && cohort.manualCompletion[participantId]!==undefined && cohort.manualCompletion[participantId]!==null){
+    return cohort.manualCompletion[participantId];
+  }
+  const att = cohortAttendancePct(cohort, participantId);
+  const sub = cohortSubmissionsInfo(cohort, participantId);
+  if(cohort.sessions.length===0 && cohort.assignments.length===0) return null;
+  return att>=80 && sub.done===sub.total;
+}
+function renderCohorts(){
+  if(currentCohortId){
+    const c = cohorts.find(x=>x.id===currentCohortId);
+    if(c) return renderCohortDetail(c);
+    currentCohortId = null;
+  }
+  return renderCohortList();
+}
+function renderCohortList(){
+  const top = document.getElementById('topbar');
+  top.innerHTML = `${menuToggleHtml()}<h2>Formación</h2><div class="grow"></div><button class="btn primary" id="newCohortBtn">+ Nueva cohorte</button>`;
+  wireMenuToggle();
+  document.getElementById('newCohortBtn').addEventListener('click', openCohortModal);
+  const list = cohorts.filter(c=>c.projectId===currentProjectId).sort((a,b)=>(b.startDate||'').localeCompare(a.startDate||''));
+  const content = document.getElementById('content');
+  content.innerHTML = `<div class="pane">
+    <div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+      ${list.length? list.map(c=>{
+        const avgAtt = c.participants.length? Math.round(c.participants.reduce((s,p)=>s+cohortAttendancePct(c,p.id),0)/c.participants.length) : 0;
+        return `<div class="card" style="cursor:pointer" data-cohortopen="${c.id}">
+          <div style="font-size:11px;color:var(--text-muted);font-weight:700">${esc(c.programName||'Programa')}</div>
+          <div style="font-size:15px;font-weight:800;margin:4px 0 8px">${esc(c.name)}</div>
+          <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px">${c.startDate||'?'} → ${c.endDate||'?'}</div>
+          <div class="card-row" style="margin:0">
+            <span style="font-size:12px;color:var(--text-muted)">👥 ${c.participants.length} participante(s)</span>
+            <span style="font-size:12px;color:var(--accent-2);font-weight:700">${avgAtt}% asistencia</span>
+          </div>
+        </div>`;
+      }).join('') : '<div class="empty">Todavía ninguna cohorte en marcha — crea la primera y arranca a seguirle el pulso.</div>'}
+    </div>
+  </div>`;
+  content.querySelectorAll('[data-cohortopen]').forEach(card=>card.addEventListener('click', ()=>{
+    currentCohortId = card.dataset.cohortopen;
+    renderCohorts();
+  }));
+}
+function openCohortModal(){
+  const html = `
+    <h3>Nueva cohorte</h3>
+    <div class="field"><label>Programa</label><input type="text" id="coProgram" placeholder="Ej. Curso Interamericano sobre Migración y Protección"></div>
+    <div class="field"><label>Nombre de la cohorte</label><input type="text" id="coName" placeholder="Ej. 7ma Cohorte"></div>
+    <div class="field"><label>Fecha de inicio</label><input type="date" id="coStart"></div>
+    <div class="field"><label>Fecha de fin</label><input type="date" id="coEnd"></div>
+    <div class="modal-actions"><button class="btn ghost" id="coCancel">Cancelar</button><button class="btn primary" id="coSave">Crear cohorte</button></div>
+  `;
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('coCancel').addEventListener('click', closeModal);
+  document.getElementById('coSave').addEventListener('click', async ()=>{
+    const name = document.getElementById('coName').value.trim();
+    if(!name) return;
+    cohorts = await pGetFresh('cohorts', cohorts);
+    cohorts.push({
+      id:uid(), projectId:currentProjectId,
+      programName:document.getElementById('coProgram').value.trim(),
+      name, startDate:document.getElementById('coStart').value, endDate:document.getElementById('coEnd').value,
+      participants:[], sessions:[], assignments:[], evaluations:[], manualCompletion:{}
+    });
+    if(!(await pSetChecked('cohorts', cohorts, 'nueva cohorte'))) return;
+    logActivity('cohorte_creada', `Creó la cohorte "${name}"`);
+    closeModal(); renderCohorts();
+  });
+}
+
+let cohortSubView = 'participantes';
+function renderCohortDetail(c){
+  const top = document.getElementById('topbar');
+  top.innerHTML = `${menuToggleHtml()}
+    <button class="link-btn" id="cohortBack">← Cohortes</button>
+    <h2>${esc(c.name)}</h2>
+    <div class="grow"></div>
+    <button class="card-del" id="cohortDelBtn">Eliminar cohorte</button>`;
+  wireMenuToggle();
+  document.getElementById('cohortBack').addEventListener('click', ()=>{ currentCohortId=null; renderCohorts(); });
+  document.getElementById('cohortDelBtn').addEventListener('click', async ()=>{
+    if(!confirm(`¿Eliminar la cohorte "${c.name}" y todos sus datos? Esta acción no se puede deshacer.`)) return;
+    cohorts = await pGetFresh('cohorts', cohorts);
+    cohorts = cohorts.filter(x=>x.id!==c.id);
+    if(!(await pSetChecked('cohorts', cohorts, 'eliminación de cohorte'))) return;
+    logActivity('cohorte_eliminada', `Eliminó la cohorte "${c.name}"`);
+    currentCohortId = null; renderCohorts();
+  });
+
+  const tabs = [
+    {v:'participantes', l:'Participantes'},
+    {v:'sesiones', l:'Sesiones'},
+    {v:'entregas', l:'Entregas'},
+    {v:'evaluaciones', l:'Evaluaciones'},
+    {v:'resumen', l:'Resumen'},
+  ];
+  const content = document.getElementById('content');
+  content.innerHTML = `<div class="pane">
+    <div class="view-toggle" style="margin-bottom:16px;display:inline-flex">
+      ${tabs.map(t=>`<button class="view-toggle-btn ${cohortSubView===t.v?'active':''}" data-cohorttab="${t.v}">${t.l}</button>`).join('')}
+    </div>
+    <div id="cohortTabBody"></div>
+  </div>`;
+  content.querySelectorAll('[data-cohorttab]').forEach(b=>b.addEventListener('click', ()=>{ cohortSubView=b.dataset.cohorttab; renderCohortDetail(c); }));
+
+  const body = document.getElementById('cohortTabBody');
+  if(cohortSubView==='participantes') renderCohortParticipants(c, body);
+  else if(cohortSubView==='sesiones') renderCohortSessions(c, body);
+  else if(cohortSubView==='entregas') renderCohortAssignments(c, body);
+  else if(cohortSubView==='evaluaciones') renderCohortEvaluations(c, body);
+  else if(cohortSubView==='resumen') renderCohortSummary(c, body);
+}
+
+function renderCohortParticipants(c, body){
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:10px">Agregar participante</div>
+      <div class="field"><input type="text" id="pName" placeholder="Nombre completo"></div>
+      <div class="field"><input type="text" id="pEmail" placeholder="Correo (opcional)"></div>
+      <div class="field"><input type="text" id="pInst" placeholder="Institución / país (opcional)"></div>
+      <button class="btn primary small" id="pAdd">Agregar</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${c.participants.length? c.participants.map(p=>`
+        <div class="card-row" style="margin:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+          <span><b>${esc(p.name)}</b>${p.institution? ` · ${esc(p.institution)}`:''}${p.email? ` · ${esc(p.email)}`:''}</span>
+          <button class="card-del" data-pdel="${p.id}">Eliminar</button>
+        </div>
+      `).join('') : '<div class="empty">Sin participantes todavía — agrega el primero arriba.</div>'}
+    </div>
+  `;
+  document.getElementById('pAdd').addEventListener('click', async ()=>{
+    const name = document.getElementById('pName').value.trim();
+    if(!name) return;
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.participants.push({id:uid(), name, email:document.getElementById('pEmail').value.trim(), institution:document.getElementById('pInst').value.trim()});
+    if(!(await pSetChecked('cohorts', cohorts, 'nuevo participante'))) return;
+    renderCohortDetail(cc);
+  });
+  body.querySelectorAll('[data-pdel]').forEach(b=>b.addEventListener('click', async ()=>{
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.participants = cc.participants.filter(p=>p.id!==b.dataset.pdel);
+    if(!(await pSetChecked('cohorts', cohorts, 'eliminación de participante'))) return;
+    renderCohortDetail(cc);
+  }));
+}
+
+function renderCohortSessions(c, body){
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:10px">Nueva sesión</div>
+      <div class="field"><input type="text" id="sTitle" placeholder="Ej. Módulo 1 — Introducción"></div>
+      <div class="field"><input type="date" id="sDate"></div>
+      <button class="btn primary small" id="sAdd">Crear sesión</button>
+    </div>
+    ${c.participants.length===0? '<div class="empty">Agrega participantes primero para poder marcar asistencia.</div>' : ''}
+    <div style="display:flex;flex-direction:column;gap:12px">
+      ${c.sessions.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(s=>`
+        <div class="card">
+          <div class="card-row" style="margin-top:0">
+            <span style="font-weight:700;font-size:13px">${esc(s.title)} ${s.date? `<span style="color:var(--text-muted);font-weight:600">· ${esc(s.date)}</span>`:''}</span>
+            <button class="card-del" data-sdel="${s.id}">Eliminar</button>
+          </div>
+          ${c.participants.map(p=>`
+            <label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px">
+              <input type="checkbox" data-attend="${s.id}|${p.id}" ${s.attendance && s.attendance[p.id]?'checked':''}>
+              ${esc(p.name)}
+            </label>
+          `).join('')}
+        </div>
+      `).join('')}
+    </div>
+  `;
+  document.getElementById('sAdd').addEventListener('click', async ()=>{
+    const title = document.getElementById('sTitle').value.trim();
+    if(!title) return;
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.sessions.push({id:uid(), title, date:document.getElementById('sDate').value, attendance:{}});
+    if(!(await pSetChecked('cohorts', cohorts, 'nueva sesión'))) return;
+    renderCohortDetail(cc);
+  });
+  body.querySelectorAll('[data-sdel]').forEach(b=>b.addEventListener('click', async ()=>{
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.sessions = cc.sessions.filter(s=>s.id!==b.dataset.sdel);
+    if(!(await pSetChecked('cohorts', cohorts, 'eliminación de sesión'))) return;
+    renderCohortDetail(cc);
+  }));
+  body.querySelectorAll('[data-attend]').forEach(cb=>cb.addEventListener('change', async ()=>{
+    const [sessionId, participantId] = cb.dataset.attend.split('|');
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    const session = cc.sessions.find(s=>s.id===sessionId);
+    session.attendance = session.attendance || {};
+    session.attendance[participantId] = cb.checked;
+    if(!(await pSetChecked('cohorts', cohorts, 'asistencia'))) return;
+  }));
+}
+
+function renderCohortAssignments(c, body){
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:10px">Nueva entrega</div>
+      <div class="field"><input type="text" id="aTitle" placeholder="Ej. Ensayo final"></div>
+      <div class="field"><input type="date" id="aDue"></div>
+      <button class="btn primary small" id="aAdd">Crear entrega</button>
+    </div>
+    ${c.participants.length===0? '<div class="empty">Agrega participantes primero para poder marcar entregas.</div>' : ''}
+    <div style="display:flex;flex-direction:column;gap:12px">
+      ${c.assignments.map(a=>`
+        <div class="card">
+          <div class="card-row" style="margin-top:0">
+            <span style="font-weight:700;font-size:13px">${esc(a.title)} ${a.dueDate? `<span style="color:var(--text-muted);font-weight:600">· vence ${esc(a.dueDate)}</span>`:''}</span>
+            <button class="card-del" data-adel="${a.id}">Eliminar</button>
+          </div>
+          ${c.participants.map(p=>`
+            <label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px">
+              <input type="checkbox" data-submit="${a.id}|${p.id}" ${a.submissions && a.submissions[p.id]==='submitted'?'checked':''}>
+              ${esc(p.name)}
+            </label>
+          `).join('')}
+        </div>
+      `).join('')}
+    </div>
+  `;
+  document.getElementById('aAdd').addEventListener('click', async ()=>{
+    const title = document.getElementById('aTitle').value.trim();
+    if(!title) return;
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.assignments.push({id:uid(), title, dueDate:document.getElementById('aDue').value, submissions:{}});
+    if(!(await pSetChecked('cohorts', cohorts, 'nueva entrega'))) return;
+    renderCohortDetail(cc);
+  });
+  body.querySelectorAll('[data-adel]').forEach(b=>b.addEventListener('click', async ()=>{
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.assignments = cc.assignments.filter(a=>a.id!==b.dataset.adel);
+    if(!(await pSetChecked('cohorts', cohorts, 'eliminación de entrega'))) return;
+    renderCohortDetail(cc);
+  }));
+  body.querySelectorAll('[data-submit]').forEach(cb=>cb.addEventListener('change', async ()=>{
+    const [assignmentId, participantId] = cb.dataset.submit.split('|');
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    const a = cc.assignments.find(x=>x.id===assignmentId);
+    a.submissions = a.submissions || {};
+    a.submissions[participantId] = cb.checked ? 'submitted' : 'pending';
+    if(!(await pSetChecked('cohorts', cohorts, 'entrega'))) return;
+  }));
+}
+
+function renderCohortEvaluations(c, body){
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:10px">Nueva evaluación</div>
+      <div class="field"><input type="text" id="eTitle" placeholder="Ej. Examen módulo 2"></div>
+      <div class="field"><input type="number" id="eMax" placeholder="Puntaje máximo (ej. 100)"></div>
+      <button class="btn primary small" id="eAdd">Crear evaluación</button>
+    </div>
+    ${c.participants.length===0? '<div class="empty">Agrega participantes primero para poder registrar calificaciones.</div>' : ''}
+    <div style="display:flex;flex-direction:column;gap:12px">
+      ${c.evaluations.map(e=>`
+        <div class="card">
+          <div class="card-row" style="margin-top:0">
+            <span style="font-weight:700;font-size:13px">${esc(e.title)} ${e.maxScore? `<span style="color:var(--text-muted);font-weight:600">· sobre ${esc(String(e.maxScore))}</span>`:''}</span>
+            <button class="card-del" data-edel="${e.id}">Eliminar</button>
+          </div>
+          ${c.participants.map(p=>`
+            <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px">
+              <span style="flex:1">${esc(p.name)}</span>
+              <input type="number" data-score="${e.id}|${p.id}" value="${e.scores && e.scores[p.id]!==undefined? e.scores[p.id]:''}" style="width:80px;padding:4px 8px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+            </div>
+          `).join('')}
+        </div>
+      `).join('')}
+    </div>
+  `;
+  document.getElementById('eAdd').addEventListener('click', async ()=>{
+    const title = document.getElementById('eTitle').value.trim();
+    if(!title) return;
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.evaluations.push({id:uid(), title, maxScore:document.getElementById('eMax').value||null, scores:{}});
+    if(!(await pSetChecked('cohorts', cohorts, 'nueva evaluación'))) return;
+    renderCohortDetail(cc);
+  });
+  body.querySelectorAll('[data-edel]').forEach(b=>b.addEventListener('click', async ()=>{
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.evaluations = cc.evaluations.filter(e=>e.id!==b.dataset.edel);
+    if(!(await pSetChecked('cohorts', cohorts, 'eliminación de evaluación'))) return;
+    renderCohortDetail(cc);
+  }));
+  body.querySelectorAll('[data-score]').forEach(inp=>inp.addEventListener('change', async ()=>{
+    const [evalId, participantId] = inp.dataset.score.split('|');
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    const e = cc.evaluations.find(x=>x.id===evalId);
+    e.scores = e.scores || {};
+    e.scores[participantId] = inp.value===''? null : Number(inp.value);
+    if(!(await pSetChecked('cohorts', cohorts, 'calificación'))) return;
+  }));
+}
+
+function renderCohortSummary(c, body){
+  body.innerHTML = `
+    <table class="task-table">
+      <thead><tr><th>Participante</th><th>Asistencia</th><th>Entregas</th><th>Promedio</th><th>Estado</th></tr></thead>
+      <tbody>
+        ${c.participants.length? c.participants.map(p=>{
+          const att = cohortAttendancePct(c, p.id);
+          const sub = cohortSubmissionsInfo(c, p.id);
+          const avg = cohortAvgScore(c, p.id);
+          const completed = cohortIsCompleted(c, p.id);
+          const manualVal = (c.manualCompletion && c.manualCompletion[p.id]!==undefined) ? c.manualCompletion[p.id] : null;
+          return `<tr>
+            <td class="tt-title">${esc(p.name)}</td>
+            <td style="color:${att>=80?'var(--accent-2)':att>=50?'var(--accent)':'var(--danger)'}">${att}%</td>
+            <td>${sub.done}/${sub.total}</td>
+            <td>${avg!==null? avg : '—'}</td>
+            <td>
+              <select data-manualcomplete="${p.id}">
+                <option value="auto" ${manualVal===null?'selected':''}>Automático (${completed===null?'sin datos':completed?'Completado':'No completado'})</option>
+                <option value="yes" ${manualVal===true?'selected':''}>Completado</option>
+                <option value="no" ${manualVal===false?'selected':''}>No completado</option>
+              </select>
+            </td>
+          </tr>`;
+        }).join('') : `<tr><td colspan="5"><div class="empty">Sin participantes todavía</div></td></tr>`}
+      </tbody>
+    </table>
+  `;
+  body.querySelectorAll('[data-manualcomplete]').forEach(sel=>sel.addEventListener('change', async ()=>{
+    const pid = sel.dataset.manualcomplete;
+    cohorts = await pGetFresh('cohorts', cohorts);
+    const cc = cohorts.find(x=>x.id===c.id);
+    cc.manualCompletion = cc.manualCompletion || {};
+    cc.manualCompletion[pid] = sel.value==='auto'? null : sel.value==='yes';
+    if(!(await pSetChecked('cohorts', cohorts, 'estado de finalización'))) return;
+    renderCohortDetail(cc);
+  }));
 }
 
 /* ================= GLOBAL SEARCH ================= */
