@@ -3490,12 +3490,17 @@ function renderStagesBlock(t){
   let activeIdx = stages.findIndex(s=>s.status!=='done');
   if(activeIdx===-1) activeIdx = stages.length;
   const doneCount = stages.filter(s=>s.status==='done').length;
-  const boxW = 132, boxH = 58, gap = 26, padTop = 14;
+  const boxW = 132, boxH = 58, gap = 26;
+  const railY = 16, circR = 7, boxTop = 40;
   const svgW = stages.length*boxW + (stages.length-1)*gap + 20;
-  const svgH = padTop + boxH + 14;
-  let boxes = '', arrows = '';
+  const svgH = boxTop + boxH + 14;
+  const centerX = i => 10 + i*(boxW+gap) + boxW/2;
+  const railX1 = centerX(0), railX2 = centerX(stages.length-1);
+  const progressX = activeIdx>=stages.length ? railX2 : centerX(activeIdx);
+  let boxes = '', stubs = '', nodes = '';
   stages.forEach((s,i)=>{
     const x = 10 + i*(boxW+gap);
+    const cx = centerX(i);
     const isDone = s.status==='done';
     const isActive = i===activeIdx;
     const isLocked = i>activeIdx;
@@ -3503,16 +3508,16 @@ function renderStagesBlock(t){
     const stroke = isLocked? 'var(--border)' : 'transparent';
     const textFill = (isDone||isActive)? 'var(--accent-ink)' : 'var(--text-muted)';
     boxes += `<g>
-      <rect x="${x}" y="${padTop}" width="${boxW}" height="${boxH}" rx="10" fill="${fill}" stroke="${stroke}" stroke-width="1"/>
-      <text x="${x+boxW/2}" y="${padTop+23}" text-anchor="middle" font-size="11.5" font-weight="700" fill="${textFill}">${esc(truncateText(s.title,17))}</text>
-      <text x="${x+boxW/2}" y="${padTop+40}" text-anchor="middle" font-size="10" fill="${textFill}" opacity="0.9">${esc(truncateText(s.responsible,18))}</text>
-      ${isDone? `<text x="${x+boxW-16}" y="${padTop+16}" font-size="11" fill="${textFill}">✓</text>` : ''}
-      ${isLocked? `<text x="${x+boxW-16}" y="${padTop+16}" font-size="10">🔒</text>` : ''}
+      <rect x="${x}" y="${boxTop}" width="${boxW}" height="${boxH}" rx="10" fill="${fill}" stroke="${stroke}" stroke-width="1"/>
+      <text x="${cx}" y="${boxTop+23}" text-anchor="middle" font-size="11.5" font-weight="700" fill="${textFill}">${esc(truncateText(s.title,17))}</text>
+      <text x="${cx}" y="${boxTop+40}" text-anchor="middle" font-size="10" fill="${textFill}" opacity="0.9">${esc(truncateText(s.responsible,18))}</text>
+      ${isDone? `<text x="${x+boxW-16}" y="${boxTop+16}" font-size="11" fill="${textFill}">✓</text>` : ''}
+      ${isLocked? `<text x="${x+boxW-16}" y="${boxTop+16}" font-size="10">🔒</text>` : ''}
     </g>`;
-    if(i<stages.length-1){
-      const x1 = x+boxW, x2 = x+boxW+gap, ymid = padTop+boxH/2;
-      arrows += `<line x1="${x1+3}" y1="${ymid}" x2="${x2-4}" y2="${ymid}" stroke="var(--border)" stroke-width="2" marker-end="url(#stagearrow)"/>`;
-    }
+    stubs += `<line x1="${cx}" y1="${railY+circR}" x2="${cx}" y2="${boxTop}" stroke="var(--border)" stroke-width="1.5"/>`;
+    const nodeFill = isDone? 'var(--accent-2)' : isActive? 'var(--accent)' : 'var(--surface-2)';
+    const nodeStroke = isLocked? 'var(--border)' : 'var(--surface)';
+    nodes += `<circle cx="${cx}" cy="${railY}" r="${circR}" fill="${nodeFill}" stroke="${nodeStroke}" stroke-width="2"/>`;
   });
   const active = stages[activeIdx];
   const canAct = active && (me.name===active.responsible || isAdmin);
@@ -3520,9 +3525,11 @@ function renderStagesBlock(t){
     <div class="card-row" style="margin-top:0"><span style="font-size:11px;color:var(--text-muted)">Etapas (relevo)</span><span style="font-size:11px;color:${doneCount===stages.length?'var(--accent-2)':'var(--text-muted)'};font-weight:800">${doneCount}/${stages.length}</span></div>
     <div style="overflow-x:auto;margin:6px 0">
       <svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="display:block">
-        <defs><marker id="stagearrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10Z" fill="var(--border)"/></marker></defs>
-        ${arrows}
+        <line x1="${railX1}" y1="${railY}" x2="${railX2}" y2="${railY}" stroke="var(--border)" stroke-width="3" stroke-linecap="round"/>
+        <line x1="${railX1}" y1="${railY}" x2="${progressX}" y2="${railY}" stroke="var(--accent-2)" stroke-width="3" stroke-linecap="round"/>
+        ${stubs}
         ${boxes}
+        ${nodes}
       </svg>
     </div>
     ${canAct? `<button class="btn small primary" data-stagedone="${t.id}|${active.id}">Marcar lista: ${esc(active.title)}</button>` : ''}
