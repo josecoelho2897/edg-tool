@@ -572,6 +572,39 @@ function emailFor(name){
   const r = roster.find(x=>x.name===name);
   return r?.email || null;
 }
+function automationsFor(projectId){
+  return automations.filter(a=>a.projectId===projectId && a.enabled);
+}
+async function runAutomations(trigger, task, extra){
+  const projectId = task.projectId;
+  const rules = automationsFor(projectId).filter(a=>a.trigger===trigger);
+  for(const rule of rules){
+    if(trigger==='task_status_changed' && rule.conditionValue && task.status!==rule.conditionValue) continue;
+    if(rule.actionType==='notify' || rule.actionType==='email'){
+      const targetName = rule.actionTarget==='responsable' ? task.assignee : rule.actionTarget;
+      if(!targetName) continue;
+      logNotification({
+        type:'task', title:`Automatización: ${rule.name}`,
+        body:`Tarea "${task.title}"`, targetNames:[targetName], projectId, view:'tasks'
+      });
+      if(rule.actionType==='email'){
+        const email = emailFor(targetName);
+        if(email) await sendEmailNotification(email, targetName, `Automatización: ${rule.name}`, `Se activó la regla "${rule.name}" para la tarea "${task.title}".`);
+      }
+    } else if(rule.actionType==='create_task' && rule.actionText){
+      tasks = await pGetFresh('tasks', tasks);
+      const newT = {
+        id:uid(), title:rule.actionText, description:`Creada automáticamente por la regla "${rule.name}"`,
+        assignee:rule.actionTarget||'', members:[], team:'', due:'', priority:'media', status:'todo',
+        showOnCalendar:false, recurrence:'none', dependsOn:null, subtasks:[], comments:[], stages:[],
+        goalId:null, projectId, customValues:{}, createdBy:'Automatización', createdAt:Date.now()
+      };
+      tasks.push(newT);
+      await pSetChecked('tasks', tasks, 'tarea automática');
+      logActivity('tarea_creada', `Automatización "${rule.name}" creó la tarea "${rule.actionText}"`);
+    }
+  }
+}
 async function notifyStageTurn(task, stage){
   const email = emailFor(stage.responsible);
   logNotification({
@@ -933,6 +966,7 @@ let goals = [];
 let events = [];
 let cohorts = [];
 let currentCohortId = null;
+let automations = [];
 let reads = {};
 let workspaceName = "Espacio de equipo";
 
@@ -1139,8 +1173,7 @@ async function pollLoop(){
     goals = await pGetFresh('goals', goals);
     events = await pGetFresh('events', events);
     cohorts = await pGetFresh('cohorts', cohorts);
-
-    // Re-check right before touching the screen — typing may have started during the fetches above.
+    automations = await pGetFresh('automations', automations);
     const activeElNow = document.activeElement;
     if(activeElNow && (activeElNow.id==='msgInput' || activeElNow.id==='dmInput')) return;
 
@@ -1552,6 +1585,7 @@ async function onLoggedIn(){
   goals = await pGet('goals', []);
   events = await pGet('events', []);
   cohorts = await pGet('cohorts', []);
+  automations = await pGet('automations', []);
   if(projects.length===0){
     const generalId = uid();
     projects = [{id:generalId, name:'General', description:'Espacio compartido para todo el equipo', isGeneral:true, members:[], createdBy:me.name, createdAt:Date.now()}];
@@ -2517,7 +2551,7 @@ function renderDashboard(){
 /* ================= ACTIVITY ================= */
 const ACTIVITY_LABELS = {
   tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️', tarea_comentario:'💬', campo_creado:'🧩',
-  cohorte_creada:'🎓', cohorte_eliminada:'🗑️', etapa_completada:'🏁',
+  cohorte_creada:'🎓', cohorte_eliminada:'🗑️', etapa_completada:'🏁', automatizacion_creada:'⚡',
   meta_creada:'🆕', meta_progreso:'📈', meta_eliminada:'🗑️',
   evento_creado:'🆕', evento_eliminado:'🗑️', evento_actualizado:'✏️',
   canal_creado:'🆕', mensaje_eliminado:'🗑️', canal_archivado:'📦', mensaje_restaurado:'♻️',
@@ -3306,6 +3340,7 @@ function renderTasks(){
     </div>
     <div class="grow"></div>
     ${isAdmin? `<button class="btn ghost" id="customFieldsBtn" title="Configurar campos personalizados">⚙ Campos</button>`:''}
+    ${isAdmin? `<button class="btn ghost" id="automationsBtn" title="Configurar automatizaciones">⚡ Automatizaciones</button>`:''}
     <button class="btn primary" id="newTaskBtn">+ Nueva tarea</button>`;
   wireMenuToggle();
   document.getElementById('newTaskBtn').addEventListener('click', openTaskModal);
@@ -3313,6 +3348,8 @@ function renderTasks(){
   document.getElementById('viewListBtn').addEventListener('click', ()=>{ taskViewMode='list'; renderTasks(); });
   const cfBtn = document.getElementById('customFieldsBtn');
   if(cfBtn) cfBtn.addEventListener('click', openCustomFieldsModal);
+  const autoBtn = document.getElementById('automationsBtn');
+  if(autoBtn) autoBtn.addEventListener('click', openAutomationsModal);
 
   const projTasks = tasks.filter(t=>t.projectId===currentProjectId);
   const content = document.getElementById('content');
@@ -3481,6 +3518,7 @@ async function changeTaskStatus(taskId, newStatus){
   if(!(await pSetChecked('tasks', tasks, 'cambio de estado de tarea'))){ t.status = prev; if(newOccurrence) tasks.pop(); renderTasks(); return; }
   logActivity('tarea_estado', `Cambió "${t.title}" a ${STATUSES.find(s=>s.v===t.status)?.l}`);
   if(newOccurrence) logActivity('tarea_creada', `Se generó automáticamente la siguiente repetición de "${t.title}"`);
+  runAutomations('task_status_changed', t);
   renderTasks();
 }
 function truncateText(str, n){ return str.length>n ? str.slice(0,n-1)+'…' : str; }
@@ -3640,6 +3678,93 @@ function openCustomFieldsModal(){
     openCustomFieldsModal();
   });
 }
+function openAutomationsModal(){
+  const proj = currentProject();
+  const members = projectMembers(proj);
+  const rules = automations.filter(a=>a.projectId===proj.id);
+  const TRIGGER_LABELS = {task_created:'Se crea una tarea', task_status_changed:'Una tarea cambia de estado', event_created:'Se crea un evento'};
+  const ACTION_LABELS = {notify:'Notificar en la app', email:'Enviar correo', create_task:'Crear tarea de seguimiento'};
+  const html = `
+    <h3>Automatizaciones</h3>
+    <div class="lead">Reglas de este proyecto: cuando pase algo, la app hace algo más, sola.</div>
+    <div id="autoList" style="margin-bottom:16px">
+      ${rules.length? rules.map(r=>`
+        <div class="card-row" style="padding:8px 0;border-top:1px solid var(--border);align-items:flex-start">
+          <div style="flex:1">
+            <div style="font-weight:700;font-size:13px">${esc(r.name)}</div>
+            <div style="font-size:11.5px;color:var(--text-muted);margin-top:2px">
+              Cuando: ${TRIGGER_LABELS[r.trigger]}${r.conditionValue? ` (estado: ${STATUSES.find(s=>s.v===r.conditionValue)?.l||r.conditionValue})`:''}
+              → ${ACTION_LABELS[r.actionType]}${r.actionTarget? `: ${esc(r.actionTarget)}`:''}${r.actionText? ` "${esc(r.actionText)}"`:''}
+            </div>
+          </div>
+          <button class="card-del" data-autodel="${r.id}">Eliminar</button>
+        </div>
+      `).join('') : '<div class="empty">Sin reglas todavía — arma la primera abajo.</div>'}
+    </div>
+    <hr style="border-color:var(--border);margin:12px 0">
+    <div class="field"><label>Nombre de la regla</label><input type="text" id="autoName" placeholder="Ej. Avisar cuando algo se marca urgente"></div>
+    <div class="field"><label>Cuando (disparador)</label><select id="autoTrigger">
+      <option value="task_created">Se crea una tarea</option>
+      <option value="task_status_changed">Una tarea cambia de estado</option>
+      <option value="event_created">Se crea un evento</option>
+    </select></div>
+    <div class="field" id="autoConditionField" style="display:none">
+      <label>Solo si el nuevo estado es</label>
+      <select id="autoCondition"><option value="">Cualquier estado</option>${STATUSES.map(s=>`<option value="${s.v}">${s.l}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Entonces (acción)</label><select id="autoAction">
+      <option value="notify">Notificar a alguien en la app</option>
+      <option value="email">Enviar correo a alguien</option>
+      <option value="create_task">Crear una tarea de seguimiento</option>
+    </select></div>
+    <div class="field" id="autoTargetField">
+      <label>¿A quién?</label>
+      <select id="autoTarget"><option value="responsable">El responsable de la tarea</option>${members.map(m=>`<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('')}</select>
+    </div>
+    <div class="field" id="autoTextField" style="display:none">
+      <label>Título de la tarea de seguimiento</label>
+      <input type="text" id="autoText" placeholder="Ej. Revisar resultado">
+    </div>
+    <div class="modal-actions"><button class="btn ghost" id="autoClose">Cerrar</button><button class="btn primary" id="autoSave">Crear regla</button></div>
+  `;
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('autoClose').addEventListener('click', closeModal);
+  const triggerSel = document.getElementById('autoTrigger');
+  const actionSel = document.getElementById('autoAction');
+  function syncAutoForm(){
+    document.getElementById('autoConditionField').style.display = triggerSel.value==='task_status_changed' ? 'block' : 'none';
+    document.getElementById('autoTargetField').style.display = actionSel.value==='create_task' ? 'none' : 'block';
+    document.getElementById('autoTextField').style.display = actionSel.value==='create_task' ? 'block' : 'none';
+  }
+  triggerSel.addEventListener('change', syncAutoForm);
+  actionSel.addEventListener('change', syncAutoForm);
+  syncAutoForm();
+  document.querySelectorAll('[data-autodel]').forEach(b=>b.addEventListener('click', async ()=>{
+    automations = await pGetFresh('automations', automations);
+    automations = automations.filter(a=>a.id!==b.dataset.autodel);
+    if(!(await pSetChecked('automations', automations, 'eliminación de regla'))) return;
+    openAutomationsModal();
+  }));
+  document.getElementById('autoSave').addEventListener('click', async ()=>{
+    const name = document.getElementById('autoName').value.trim();
+    if(!name) return;
+    const trigger = triggerSel.value;
+    const actionType = actionSel.value;
+    automations = await pGetFresh('automations', automations);
+    automations.push({
+      id:uid(), projectId:proj.id, name, trigger,
+      conditionValue: trigger==='task_status_changed' ? (document.getElementById('autoCondition').value||null) : null,
+      actionType,
+      actionTarget: actionType!=='create_task' ? document.getElementById('autoTarget').value : (document.getElementById('autoTarget').value||null),
+      actionText: actionType==='create_task' ? document.getElementById('autoText').value.trim() : null,
+      enabled:true
+    });
+    if(!(await pSetChecked('automations', automations, 'nueva automatización'))) return;
+    logActivity('automatizacion_creada', `Creó la automatización "${name}"`, proj.id);
+    openAutomationsModal();
+  });
+}
 function openTaskModal(){
   const members = projectMembers(currentProject());
   const projGoals = goals.filter(g=>g.projectId===currentProjectId);
@@ -3787,6 +3912,7 @@ function openTaskModal(){
     logActivity('tarea_creada', `Creó la tarea "${title}"`);
     notifyTaskAssignment(newTask);
     if(newTask.stages.length) notifyStageTurn(newTask, newTask.stages[0]);
+    runAutomations('task_created', newTask);
     closeModal(); renderTasks();
   });
 }
@@ -4159,6 +4285,7 @@ function openDayModal(dateKey){
       logActivity('evento_creado', `Creó el evento "${title}" (${dateKey})`);
       await logEventUpdate(newEv, 'created');
       notifyNewEvent(newEv);
+      runAutomations('event_created', newEv);
     }
     closeModal(); renderCalendar();
   });
