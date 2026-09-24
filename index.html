@@ -572,6 +572,17 @@ function emailFor(name){
   const r = roster.find(x=>x.name===name);
   return r?.email || null;
 }
+async function notifyStageTurn(task, stage){
+  const email = emailFor(stage.responsible);
+  logNotification({
+    type:'task', title:`Es tu turno: ${task.title}`,
+    body:`Etapa "${stage.title}"`, targetNames:[stage.responsible], projectId:task.projectId, view:'tasks'
+  });
+  if(email && stage.responsible!==me.name){
+    await sendEmailNotification(email, stage.responsible, `Es tu turno: ${task.title}`,
+      `${me.name} avanzó la tarea "${task.title}" — ahora te toca a ti la etapa "${stage.title}".`);
+  }
+}
 async function notifyTaskAssignment(task){
   const names = [task.assignee, ...(task.members||[]), me.name].filter(Boolean);
   const uniqueNames = [...new Set(names)];
@@ -2506,7 +2517,7 @@ function renderDashboard(){
 /* ================= ACTIVITY ================= */
 const ACTIVITY_LABELS = {
   tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️', tarea_comentario:'💬', campo_creado:'🧩',
-  cohorte_creada:'🎓', cohorte_eliminada:'🗑️',
+  cohorte_creada:'🎓', cohorte_eliminada:'🗑️', etapa_completada:'🏁',
   meta_creada:'🆕', meta_progreso:'📈', meta_eliminada:'🗑️',
   evento_creado:'🆕', evento_eliminado:'🗑️', evento_actualizado:'✏️',
   canal_creado:'🆕', mensaje_eliminado:'🗑️', canal_archivado:'📦', mensaje_restaurado:'♻️',
@@ -3341,6 +3352,11 @@ function renderTasks(){
     renderTasks();
   }));
   content.querySelectorAll('[data-taskopen]').forEach(b=>b.addEventListener('click', ()=>openTaskDetailModal(b.dataset.taskopen)));
+  content.querySelectorAll('[data-stagedone]').forEach(b=>b.addEventListener('click', async ()=>{
+    const [taskId, stageId] = b.dataset.stagedone.split('|');
+    await markStageComplete(taskId, stageId);
+    renderTasks();
+  }));
 
   content.querySelectorAll('[data-taskid]').forEach(card=>{
     card.addEventListener('dragstart', e=>{
@@ -3443,6 +3459,14 @@ async function changeTaskStatus(taskId, newStatus){
       return;
     }
   }
+  if(newStatus==='done' && t.stages && t.stages.length){
+    const doneCount = t.stages.filter(s=>s.status==='done').length;
+    if(doneCount < t.stages.length){
+      alert(`Esta tarea tiene etapas sin completar (${doneCount}/${t.stages.length}). Cada responsable debe marcar la suya como lista antes de que la tarea pueda cerrarse.`);
+      renderTasks();
+      return;
+    }
+  }
   const prev = t.status;
   t.status = newStatus;
   let newOccurrence = null;
@@ -3458,6 +3482,41 @@ async function changeTaskStatus(taskId, newStatus){
   logActivity('tarea_estado', `Cambió "${t.title}" a ${STATUSES.find(s=>s.v===t.status)?.l}`);
   if(newOccurrence) logActivity('tarea_creada', `Se generó automáticamente la siguiente repetición de "${t.title}"`);
   renderTasks();
+}
+function renderStagesBlock(t){
+  const stages = t.stages||[];
+  if(!stages.length) return '';
+  let activeIdx = stages.findIndex(s=>s.status!=='done');
+  if(activeIdx===-1) activeIdx = stages.length;
+  const doneCount = stages.filter(s=>s.status==='done').length;
+  return `<div style="margin-top:8px">
+    <div class="card-row" style="margin-top:0"><span style="font-size:11px;color:var(--text-muted)">Etapas (relevo)</span><span style="font-size:11px;color:${doneCount===stages.length?'var(--accent-2)':'var(--text-muted)'};font-weight:800">${doneCount}/${stages.length}</span></div>
+    <div class="progress-track" style="margin:4px 0 6px"><div class="progress-fill" style="width:${Math.round(doneCount/stages.length*100)}%;background:${doneCount===stages.length?'var(--accent-2)':'var(--accent)'}"></div></div>
+    ${stages.map((s,i)=>{
+      const isDone = s.status==='done';
+      const isActive = i===activeIdx;
+      const isLocked = i>activeIdx;
+      const canAct = isActive && (me.name===s.responsible || isAdmin);
+      return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;opacity:${isLocked?0.5:1}">
+        <span style="width:16px;text-align:center">${isDone?'✅':isLocked?'🔒':'🟡'}</span>
+        <span style="flex:1"><b style="color:var(--text-muted);font-weight:700">${i+1}.</b> ${esc(s.title)} <span style="color:var(--text-muted)">→ ${esc(s.responsible)}</span></span>
+        ${canAct? `<button class="btn small primary" data-stagedone="${t.id}|${s.id}">Marcar lista</button>` : ''}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+async function markStageComplete(taskId, stageId){
+  tasks = await pGetFresh('tasks', tasks);
+  const task = tasks.find(x=>x.id===taskId);
+  if(!task) return;
+  const stage = task.stages.find(s=>s.id===stageId);
+  if(!stage) return;
+  stage.status = 'done';
+  if(!(await pSetChecked('tasks', tasks, 'etapa completada'))) return;
+  logActivity('etapa_completada', `Completó la etapa "${stage.title}" de "${task.title}"`);
+  const idx = task.stages.findIndex(s=>s.id===stageId);
+  const next = task.stages[idx+1];
+  if(next) await notifyStageTurn(task, next);
 }
 function renderTaskCard(t){
   const pr = PRIORITIES.find(p=>p.v===t.priority)||PRIORITIES[1];
@@ -3494,6 +3553,7 @@ function renderTaskCard(t){
       <div class="progress-track" style="margin:4px 0 6px"><div class="progress-fill" style="width:${Math.round(subDone/subtasks.length*100)}%;background:${subDone===subtasks.length?'var(--accent-2)':'var(--accent)'}"></div></div>
       ${subtasks.map((s,i)=>`<div class="kr ${s.done?'done':''}" style="padding:3px 0;border-top:none"><input type="checkbox" ${s.done?'checked':''} data-subtoggle="${t.id}|${i}"><span style="font-size:12px"><b style="color:var(--text-muted);font-weight:700">${i+1}.</b> ${esc(s.text)}</span></div>`).join('')}
     </div>`:''}
+    ${renderStagesBlock(t)}
     <div class="card-row">
       <select data-taskstatus="${t.id}">${STATUSES.map(s=>`<option value="${s.v}" ${s.v===t.status?'selected':''}>${s.l}</option>`).join('')}</select>
       <span style="display:flex;gap:10px;align-items:center">
@@ -3578,6 +3638,18 @@ function openTaskModal(){
         </div>
       </div>
     </div>
+    <div class="field">
+      <button type="button" class="link-btn" id="toggleStagesBtn">+ Agregar etapas con responsables (opcional)</button>
+      <div class="lead" style="margin-top:4px">Cada etapa la hace una persona distinta, en orden — nadie puede avanzar la siguiente hasta que la anterior esté lista.</div>
+      <div id="stagesSection" style="display:none;margin-top:10px">
+        <div id="stageChips" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="stageInput" placeholder="Nombre de la etapa (ej. Redactar borrador)" style="flex:1.4">
+          <select id="stageResponsible" style="flex:1">${members.map(r=>`<option>${esc(r.name)}</option>`).join('')}</select>
+          <button type="button" class="btn small" id="addStageBtn">Añadir</button>
+        </div>
+      </div>
+    </div>
     ${customFields.map(f=>`<div class="field"><label>${esc(f.name)}</label><input type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" id="cf_${f.id}"></div>`).join('')}
     <div class="modal-actions"><button class="btn ghost" id="tCancel">Cancelar</button><button class="btn primary" id="tSave">Crear tarea</button></div>
   `;
@@ -3619,6 +3691,41 @@ function openTaskModal(){
   document.getElementById('subtaskInput').addEventListener('keydown', e=>{
     if(e.key==='Enter'){ e.preventDefault(); addSubtaskFromInput(); }
   });
+  let pendingStages = [];
+  function renderStageChips(){
+    const box = document.getElementById('stageChips');
+    box.innerHTML = pendingStages.length? pendingStages.map((s,i)=>`
+      <div class="card-row" style="margin:0;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+        <span style="font-size:13px"><b style="color:var(--text-muted)">${i+1}.</b> ${esc(s.title)} <span style="color:var(--accent-2)">→ ${esc(s.responsible)}</span></span>
+        <button type="button" class="card-del" data-rmstage="${i}">✕</button>
+      </div>
+    `).join('') : '';
+    box.querySelectorAll('[data-rmstage]').forEach(b=>b.addEventListener('click', ()=>{
+      pendingStages.splice(+b.dataset.rmstage, 1);
+      renderStageChips();
+    }));
+  }
+  document.getElementById('toggleStagesBtn').addEventListener('click', (e)=>{
+    const section = document.getElementById('stagesSection');
+    const showing = section.style.display!=='none';
+    section.style.display = showing? 'none':'block';
+    e.target.textContent = showing? '+ Agregar etapas con responsables (opcional)' : '− Ocultar etapas';
+    if(!showing) document.getElementById('stageInput').focus();
+  });
+  function addStageFromInput(){
+    const input = document.getElementById('stageInput');
+    const title = input.value.trim();
+    if(!title) return;
+    const responsible = document.getElementById('stageResponsible').value;
+    pendingStages.push({title, responsible});
+    input.value = '';
+    renderStageChips();
+    input.focus();
+  }
+  document.getElementById('addStageBtn').addEventListener('click', addStageFromInput);
+  document.getElementById('stageInput').addEventListener('keydown', e=>{
+    if(e.key==='Enter'){ e.preventDefault(); addStageFromInput(); }
+  });
   document.querySelectorAll('#tMembers .chip-opt').forEach(b=>b.addEventListener('click', ()=>{
     b.classList.toggle('sel');
     if(pickedMembers.has(b.dataset.v)) pickedMembers.delete(b.dataset.v); else pickedMembers.add(b.dataset.v);
@@ -3640,6 +3747,7 @@ function openTaskModal(){
       recurrence:document.getElementById('tRecurrence').value,
       dependsOn:document.getElementById('tDepends').value||null,
       subtasks:pendingSubtasks.map(s=>({text:s,done:false})), comments:[],
+      stages:pendingStages.map(s=>({id:uid(), title:s.title, responsible:s.responsible, status:'pending'})),
       goalId:document.getElementById('tGoal').value||null, projectId:currentProjectId,
       customValues: Object.fromEntries(customFields.map(f=>[f.id, document.getElementById('cf_'+f.id).value])),
       createdBy:me.name, createdAt:Date.now()
@@ -3648,6 +3756,7 @@ function openTaskModal(){
     if(!(await pSetChecked('tasks', tasks, 'nueva tarea'))) return;
     logActivity('tarea_creada', `Creó la tarea "${title}"`);
     notifyTaskAssignment(newTask);
+    if(newTask.stages.length) notifyStageTurn(newTask, newTask.stages[0]);
     closeModal(); renderTasks();
   });
 }
@@ -3673,6 +3782,10 @@ function openTaskDetailModal(taskId){
       <div style="margin-bottom:10px">
         ${t.subtasks.map((s,i)=>`<div class="kr ${s.done?'done':''}"><input type="checkbox" ${s.done?'checked':''} data-detailsubtoggle="${i}"><span style="font-size:13px"><b style="color:var(--text-muted)">${i+1}.</b> ${esc(s.text)}</span></div>`).join('')}
       </div>
+    `:''}
+    ${t.stages && t.stages.length? `
+      <div style="font-size:12px;color:var(--text-muted);font-weight:700;margin-bottom:6px">Etapas (relevo)</div>
+      <div style="margin-bottom:14px">${renderStagesBlock(t)}</div>
     `:''}
     <hr style="border-color:var(--border);margin:12px 0">
     <div style="font-size:12.5px;color:var(--text-muted);font-weight:700;margin-bottom:8px">Comentarios</div>
@@ -3701,6 +3814,11 @@ function openTaskDetailModal(taskId){
     const prev = task.subtasks[idx].done;
     task.subtasks[idx].done = cb.checked;
     if(!(await pSetChecked('tasks', tasks, 'subtarea'))){ task.subtasks[idx].done = prev; return; }
+    openTaskDetailModal(taskId);
+  }));
+  document.querySelectorAll('[data-stagedone]').forEach(b=>b.addEventListener('click', async ()=>{
+    const [tId, stageId] = b.dataset.stagedone.split('|');
+    await markStageComplete(tId, stageId);
     openTaskDetailModal(taskId);
   }));
   document.getElementById('tdSend').addEventListener('click', async ()=>{
