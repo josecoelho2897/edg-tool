@@ -3483,26 +3483,49 @@ async function changeTaskStatus(taskId, newStatus){
   if(newOccurrence) logActivity('tarea_creada', `Se generó automáticamente la siguiente repetición de "${t.title}"`);
   renderTasks();
 }
+function truncateText(str, n){ return str.length>n ? str.slice(0,n-1)+'…' : str; }
 function renderStagesBlock(t){
   const stages = t.stages||[];
   if(!stages.length) return '';
   let activeIdx = stages.findIndex(s=>s.status!=='done');
   if(activeIdx===-1) activeIdx = stages.length;
   const doneCount = stages.filter(s=>s.status==='done').length;
+  const boxW = 132, boxH = 58, gap = 26, padTop = 14;
+  const svgW = stages.length*boxW + (stages.length-1)*gap + 20;
+  const svgH = padTop + boxH + 14;
+  let boxes = '', arrows = '';
+  stages.forEach((s,i)=>{
+    const x = 10 + i*(boxW+gap);
+    const isDone = s.status==='done';
+    const isActive = i===activeIdx;
+    const isLocked = i>activeIdx;
+    const fill = isDone? 'var(--accent-2)' : isActive? 'var(--accent)' : 'var(--surface-2)';
+    const stroke = isLocked? 'var(--border)' : 'transparent';
+    const textFill = (isDone||isActive)? 'var(--accent-ink)' : 'var(--text-muted)';
+    boxes += `<g>
+      <rect x="${x}" y="${padTop}" width="${boxW}" height="${boxH}" rx="10" fill="${fill}" stroke="${stroke}" stroke-width="1"/>
+      <text x="${x+boxW/2}" y="${padTop+23}" text-anchor="middle" font-size="11.5" font-weight="700" fill="${textFill}">${esc(truncateText(s.title,17))}</text>
+      <text x="${x+boxW/2}" y="${padTop+40}" text-anchor="middle" font-size="10" fill="${textFill}" opacity="0.9">${esc(truncateText(s.responsible,18))}</text>
+      ${isDone? `<text x="${x+boxW-16}" y="${padTop+16}" font-size="11" fill="${textFill}">✓</text>` : ''}
+      ${isLocked? `<text x="${x+boxW-16}" y="${padTop+16}" font-size="10">🔒</text>` : ''}
+    </g>`;
+    if(i<stages.length-1){
+      const x1 = x+boxW, x2 = x+boxW+gap, ymid = padTop+boxH/2;
+      arrows += `<line x1="${x1+3}" y1="${ymid}" x2="${x2-4}" y2="${ymid}" stroke="var(--border)" stroke-width="2" marker-end="url(#stagearrow)"/>`;
+    }
+  });
+  const active = stages[activeIdx];
+  const canAct = active && (me.name===active.responsible || isAdmin);
   return `<div style="margin-top:8px">
     <div class="card-row" style="margin-top:0"><span style="font-size:11px;color:var(--text-muted)">Etapas (relevo)</span><span style="font-size:11px;color:${doneCount===stages.length?'var(--accent-2)':'var(--text-muted)'};font-weight:800">${doneCount}/${stages.length}</span></div>
-    <div class="progress-track" style="margin:4px 0 6px"><div class="progress-fill" style="width:${Math.round(doneCount/stages.length*100)}%;background:${doneCount===stages.length?'var(--accent-2)':'var(--accent)'}"></div></div>
-    ${stages.map((s,i)=>{
-      const isDone = s.status==='done';
-      const isActive = i===activeIdx;
-      const isLocked = i>activeIdx;
-      const canAct = isActive && (me.name===s.responsible || isAdmin);
-      return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;opacity:${isLocked?0.5:1}">
-        <span style="width:16px;text-align:center">${isDone?'✅':isLocked?'🔒':'🟡'}</span>
-        <span style="flex:1"><b style="color:var(--text-muted);font-weight:700">${i+1}.</b> ${esc(s.title)} <span style="color:var(--text-muted)">→ ${esc(s.responsible)}</span></span>
-        ${canAct? `<button class="btn small primary" data-stagedone="${t.id}|${s.id}">Marcar lista</button>` : ''}
-      </div>`;
-    }).join('')}
+    <div style="overflow-x:auto;margin:6px 0">
+      <svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="display:block">
+        <defs><marker id="stagearrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10Z" fill="var(--border)"/></marker></defs>
+        ${arrows}
+        ${boxes}
+      </svg>
+    </div>
+    ${canAct? `<button class="btn small primary" data-stagedone="${t.id}|${active.id}">Marcar lista: ${esc(active.title)}</button>` : ''}
   </div>`;
 }
 async function markStageComplete(taskId, stageId){
