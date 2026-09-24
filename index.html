@@ -976,6 +976,7 @@ let goals = [];
 let events = [];
 let cohorts = [];
 let currentCohortId = null;
+let currentTaskBoardId = null;
 let automations = [];
 let reads = {};
 let workspaceName = "Espacio de equipo";
@@ -2396,6 +2397,7 @@ function renderMain(isPoll){
   if(view==='activity') return renderActivity();
   if(view==='cohorts') return renderCohorts();
   if(view==='automationsBoard') return renderAutomationsBoard();
+  if(view==='taskBoard') return renderTaskBoard();
 }
 
 /* ================= DASHBOARD ================= */
@@ -2562,7 +2564,7 @@ function renderDashboard(){
 /* ================= ACTIVITY ================= */
 const ACTIVITY_LABELS = {
   tarea_creada:'🆕', tarea_estado:'🔁', tarea_eliminada:'🗑️', tarea_comentario:'💬', campo_creado:'🧩',
-  cohorte_creada:'🎓', cohorte_eliminada:'🗑️', etapa_completada:'🏁', automatizacion_creada:'⚡',
+  cohorte_creada:'🎓', cohorte_eliminada:'🗑️', etapa_completada:'🏁', automatizacion_creada:'⚡', etapa_agregada:'➕', etapa_eliminada:'🗑️',
   meta_creada:'🆕', meta_progreso:'📈', meta_eliminada:'🗑️',
   evento_creado:'🆕', evento_eliminado:'🗑️', evento_actualizado:'✏️',
   canal_creado:'🆕', mensaje_eliminado:'🗑️', canal_archivado:'📦', mensaje_restaurado:'♻️',
@@ -3400,6 +3402,9 @@ function renderTasks(){
     renderTasks();
   }));
   content.querySelectorAll('[data-taskopen]').forEach(b=>b.addEventListener('click', ()=>openTaskDetailModal(b.dataset.taskopen)));
+  content.querySelectorAll('[data-taskboardopen]').forEach(b=>b.addEventListener('click', ()=>{
+    currentTaskBoardId = b.dataset.taskboardopen; view='taskBoard'; renderShell(); renderMain();
+  }));
   content.querySelectorAll('[data-stagedone]').forEach(b=>b.addEventListener('click', async ()=>{
     const [taskId, stageId] = b.dataset.stagedone.split('|');
     await markStageComplete(taskId, stageId);
@@ -3571,7 +3576,7 @@ function renderStagesBlock(t){
   const active = stages[activeIdx];
   const canAct = active && (me.name===active.responsible || isAdmin);
   return `<div style="margin-top:8px">
-    <div class="card-row" style="margin-top:0"><span style="font-size:11px;color:var(--text-muted)">Etapas (relevo)</span><span style="font-size:11px;color:${doneCount===stages.length?'var(--accent-2)':'var(--text-muted)'};font-weight:800">${doneCount}/${stages.length}</span></div>
+    <div class="card-row" style="margin-top:0"><span style="font-size:11px;color:var(--text-muted)">Etapas (relevo)</span><span style="display:flex;align-items:center;gap:10px"><button class="link-btn" data-taskboardopen="${t.id}" style="font-size:11px">🗺 Ver tablero</button><span style="font-size:11px;color:${doneCount===stages.length?'var(--accent-2)':'var(--text-muted)'};font-weight:800">${doneCount}/${stages.length}</span></span></div>
     <div style="overflow-x:auto;margin:6px 0">
       <svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="display:block">
         <line x1="${railX1}" y1="${railY}" x2="${railX2}" y2="${railY}" stroke="var(--border)" stroke-width="3" stroke-linecap="round"/>
@@ -3879,6 +3884,184 @@ function wireAutomationBoardDrag(){
     });
   });
 }
+function taskStageLayout(task, stageId, idx){
+  const saved = (task.stagesLayout||{})[stageId];
+  return saved || {x: 40 + idx*220, y: 60};
+}
+function renderTaskBoard(){
+  const t = tasks.find(x=>x.id===currentTaskBoardId);
+  if(!t){ currentTaskBoardId=null; view='tasks'; renderShell(); renderMain(); return; }
+  const top = document.getElementById('topbar');
+  top.innerHTML = `${menuToggleHtml()}<button class="link-btn" id="taskBoardBack">← Tareas</button><h2>${esc(t.title)}</h2><div class="grow"></div><button class="btn primary" id="taskBoardAddStage">+ Nueva etapa</button>`;
+  wireMenuToggle();
+  document.getElementById('taskBoardBack').addEventListener('click', ()=>{ currentTaskBoardId=null; view='tasks'; renderShell(); renderMain(); });
+  document.getElementById('taskBoardAddStage').addEventListener('click', ()=>openAddStageToBoardModal(t.id));
+
+  const stages = t.stages||[];
+  let activeIdx = stages.findIndex(s=>s.status!=='done');
+  if(activeIdx===-1) activeIdx = stages.length;
+
+  const positions = stages.map((s,i)=>taskStageLayout(t, s.id, i));
+  let maxX=780, maxY=300;
+  positions.forEach(p=>{ maxX=Math.max(maxX, p.x+AUTO_NODE_W+60); maxY=Math.max(maxY, p.y+AUTO_NODE_H+60); });
+
+  let nodesHtml='', pathsHtml='';
+  stages.forEach((s,i)=>{
+    const p = positions[i];
+    const isDone = s.status==='done', isActive=i===activeIdx, isLocked=i>activeIdx;
+    const cls = isDone?'auto-node-trigger':isActive?'auto-node-cond':'auto-node-action';
+    nodesHtml += `<div class="auto-node ${cls}" data-tnode="${s.id}" style="left:${p.x}px;top:${p.y}px;width:${AUTO_NODE_W}px;height:${AUTO_NODE_H}px">
+      <div class="auto-node-title">${isDone?'✓ ':isLocked?'🔒 ':''}${esc(truncateText(s.title,20))}</div>
+      <div class="auto-node-sub">${esc(s.responsible)}</div>
+      <button class="auto-node-del" data-stagedel="${t.id}|${s.id}" title="Eliminar etapa">✕</button>
+    </div>`;
+    if(i<stages.length-1){
+      pathsHtml += `<path data-tconnector="${i}" d="${bezierPath(p, positions[i+1], AUTO_NODE_W, AUTO_NODE_H)}" fill="none" stroke="var(--accent-2)" stroke-width="2"/>`;
+    }
+  });
+
+  const content = document.getElementById('content');
+  content.innerHTML = `<div class="pane" style="padding:0">
+    <div class="auto-board-wrap" id="autoBoardWrap">
+      <div style="position:relative;width:${maxX}px;height:${maxY+40}px">
+        <svg width="${maxX}" height="${maxY+40}" style="position:absolute;left:0;top:0;pointer-events:none">${pathsHtml}</svg>
+        ${nodesHtml}
+        ${!stages.length? '<div class="empty" style="position:absolute;left:40px;top:40px">Esta tarea todavía no tiene etapas — agrega la primera con "+ Nueva etapa" y podrás moverla libremente por aquí.</div>':''}
+      </div>
+    </div>
+  </div>`;
+
+  wireTaskBoardDrag(t.id);
+  content.querySelectorAll('[data-stagedel]').forEach(b=>b.addEventListener('click', async (e)=>{
+    e.stopPropagation();
+    if(!confirm('¿Eliminar esta etapa?')) return;
+    const [tid,sid] = b.dataset.stagedel.split('|');
+    tasks = await pGetFresh('tasks', tasks);
+    const tk = tasks.find(x=>x.id===tid);
+    tk.stages = tk.stages.filter(s=>s.id!==sid);
+    if(!(await pSetChecked('tasks', tasks, 'eliminación de etapa'))) return;
+    logActivity('etapa_eliminada', `Eliminó una etapa de "${tk.title}"`);
+    renderTaskBoard();
+  }));
+}
+function redrawTaskBoardConnectors(){
+  const t = tasks.find(x=>x.id===currentTaskBoardId);
+  if(!t) return;
+  const stages = t.stages||[];
+  const nodeEls = stages.map(s=>document.querySelector(`[data-tnode="${s.id}"]`));
+  document.querySelectorAll('[data-tconnector]').forEach(path=>{
+    const idx = +path.dataset.tconnector;
+    const a = nodeEls[idx], b = nodeEls[idx+1];
+    if(a && b){
+      const pa = {x:parseFloat(a.style.left), y:parseFloat(a.style.top)};
+      const pb = {x:parseFloat(b.style.left), y:parseFloat(b.style.top)};
+      path.setAttribute('d', bezierPath(pa,pb,AUTO_NODE_W,AUTO_NODE_H));
+    }
+  });
+}
+function wireTaskBoardDrag(taskId){
+  document.querySelectorAll('[data-tnode]').forEach(node=>{
+    node.addEventListener('pointerdown', (e)=>{
+      if(e.target.closest('.auto-node-del')) return;
+      const startX=e.clientX, startY=e.clientY;
+      const origLeft=parseFloat(node.style.left), origTop=parseFloat(node.style.top);
+      let moved=false;
+      node.setPointerCapture(e.pointerId);
+      node.classList.add('dragging');
+      function onMove(ev){
+        const dx=ev.clientX-startX, dy=ev.clientY-startY;
+        if(Math.abs(dx)>4||Math.abs(dy)>4) moved=true;
+        node.style.left=Math.max(0,origLeft+dx)+'px';
+        node.style.top=Math.max(0,origTop+dy)+'px';
+        redrawTaskBoardConnectors();
+      }
+      async function onUp(){
+        node.removeEventListener('pointermove', onMove);
+        node.removeEventListener('pointerup', onUp);
+        node.classList.remove('dragging');
+        const stageId = node.dataset.tnode;
+        if(moved){
+          tasks = await pGetFresh('tasks', tasks);
+          const tk = tasks.find(x=>x.id===taskId);
+          tk.stagesLayout = tk.stagesLayout || {};
+          tk.stagesLayout[stageId] = {x:parseFloat(node.style.left), y:parseFloat(node.style.top)};
+          await pSetChecked('tasks', tasks, 'posición de etapa');
+        } else {
+          openEditStageModal(taskId, stageId);
+        }
+      }
+      node.addEventListener('pointermove', onMove);
+      node.addEventListener('pointerup', onUp);
+    });
+  });
+}
+function openEditStageModal(taskId, stageId){
+  const task = tasks.find(x=>x.id===taskId);
+  if(!task) return;
+  const stage = task.stages.find(s=>s.id===stageId);
+  if(!stage) return;
+  const members = projectMembers(projects.find(p=>p.id===task.projectId));
+  const stages = task.stages;
+  let activeIdx = stages.findIndex(s=>s.status!=='done');
+  if(activeIdx===-1) activeIdx = stages.length;
+  const idx = stages.findIndex(s=>s.id===stageId);
+  const canMarkDone = idx===activeIdx && stage.status!=='done' && (me.name===stage.responsible || isAdmin);
+  const html = `
+    <h3>Editar etapa</h3>
+    <div class="field"><label>Nombre</label><input type="text" id="esTitle" value="${esc(stage.title)}"></div>
+    <div class="field"><label>Responsable</label><select id="esResp">${members.map(m=>`<option ${m.name===stage.responsible?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div>
+    ${canMarkDone? `<button class="btn primary" id="esMarkDone" style="width:100%;margin-bottom:10px">Marcar esta etapa como lista</button>`:''}
+    <div class="modal-actions"><button class="btn ghost" id="esCancel">Cancelar</button><button class="btn primary" id="esSave">Guardar</button></div>
+  `;
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('esCancel').addEventListener('click', closeModal);
+  const markBtn = document.getElementById('esMarkDone');
+  if(markBtn) markBtn.addEventListener('click', async ()=>{
+    await markStageComplete(taskId, stageId);
+    closeModal();
+    renderTaskBoard();
+  });
+  document.getElementById('esSave').addEventListener('click', async ()=>{
+    const title = document.getElementById('esTitle').value.trim();
+    if(!title) return;
+    tasks = await pGetFresh('tasks', tasks);
+    const tk = tasks.find(x=>x.id===taskId);
+    const st = tk.stages.find(s=>s.id===stageId);
+    st.title = title; st.responsible = document.getElementById('esResp').value;
+    if(!(await pSetChecked('tasks', tasks, 'edición de etapa'))) return;
+    closeModal();
+    renderTaskBoard();
+  });
+}
+function openAddStageToBoardModal(taskId){
+  const task = tasks.find(x=>x.id===taskId);
+  if(!task) return;
+  const members = projectMembers(projects.find(p=>p.id===task.projectId));
+  const html = `
+    <h3>Nueva etapa</h3>
+    <div class="field"><label>Nombre</label><input type="text" id="nsTitle" placeholder="Ej. Revisar y aprobar"></div>
+    <div class="field"><label>Responsable</label><select id="nsResp">${members.map(m=>`<option>${esc(m.name)}</option>`).join('')}</select></div>
+    <div class="modal-actions"><button class="btn ghost" id="nsCancel">Cancelar</button><button class="btn primary" id="nsSave">Agregar</button></div>
+  `;
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('nsCancel').addEventListener('click', closeModal);
+  document.getElementById('nsSave').addEventListener('click', async ()=>{
+    const title = document.getElementById('nsTitle').value.trim();
+    if(!title) return;
+    tasks = await pGetFresh('tasks', tasks);
+    const tk = tasks.find(x=>x.id===taskId);
+    const wasEmpty = !tk.stages.length;
+    const newStage = {id:uid(), title, responsible:document.getElementById('nsResp').value, status:'pending'};
+    tk.stages.push(newStage);
+    if(!(await pSetChecked('tasks', tasks, 'nueva etapa'))) return;
+    logActivity('etapa_agregada', `Agregó la etapa "${title}" a "${tk.title}"`);
+    if(wasEmpty) notifyStageTurn(tk, newStage);
+    closeModal();
+    renderTaskBoard();
+  });
+}
 function openTaskModal(){
   const members = projectMembers(currentProject());
   const projGoals = goals.filter(g=>g.projectId===currentProjectId);
@@ -4090,6 +4273,10 @@ function openTaskDetailModal(taskId){
     const [tId, stageId] = b.dataset.stagedone.split('|');
     await markStageComplete(tId, stageId);
     openTaskDetailModal(taskId);
+  }));
+  document.querySelectorAll('[data-taskboardopen]').forEach(b=>b.addEventListener('click', ()=>{
+    closeModal();
+    currentTaskBoardId = b.dataset.taskboardopen; view='taskBoard'; renderShell(); renderMain();
   }));
   document.getElementById('tdSend').addEventListener('click', async ()=>{
     const input = document.getElementById('taskCommentInput');
