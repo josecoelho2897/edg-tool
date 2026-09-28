@@ -866,20 +866,34 @@ async function checkAndRegisterAttempt(username, success){
 /* escrow: lets someone recover the workspace passphrase using their own account password */
 async function deriveEscrowKey(password, saltHex){ return deriveAesKey(password+':escrow', saltHex); }
 async function saveEscrow(username, password, saltHex, phrase){
-  const escrow = await sGet('escrow', true, {});
+  // Never overwrite the shared escrow blindly: if the current state can't be read, abort.
+  // (A failed read used to fall back to {} and then wipe every other member's saved phrase.)
+  const read = await sGetCriticalRead('escrow', true);
+  if(!read.ok) return false;
+  const escrow = read.value || {};
   const ekey = await deriveEscrowKey(password, saltHex);
   escrow[username] = await encStr(phrase, ekey);
-  await sSet('escrow', escrow, true);
+  return await sSetCritical('escrow', escrow, true);
 }
 async function recoverPhraseFromEscrow(username, password){
+  const read = await sGetCriticalRead('escrow', true);
+  if(!read.ok) return {error:'conexion'};
+  const escrow = read.value || {};
   const acc = accounts[username];
-  if(!acc) return null;
-  const escrow = await sGet('escrow', true, {});
-  if(!escrow[username]) return null;
+  if(!acc || !escrow[username]) return {error:'sin-frase'};
   try{
     const ekey = await deriveEscrowKey(password, acc.saltHex);
-    return await decStr(escrow[username], ekey);
-  }catch(e){ return null; }
+    return {phrase: await decStr(escrow[username], ekey)};
+  }catch(e){ return {error:'sin-frase'}; }
+}
+
+async function removeEscrowFor(username){
+  const read = await sGetCriticalRead('escrow', true);
+  if(!read.ok) return false; // leave it untouched rather than risk wiping other members' entries
+  const escrow = read.value || {};
+  if(!(username in escrow)) return true;
+  delete escrow[username];
+  return await sSetCritical('escrow', escrow, true);
 }
 
 async function deriveAesKey(passphrase, saltHex){
@@ -1392,7 +1406,7 @@ function openAuthModal(){
       <h3>Iniciar sesión</h3>
       <div class="lead">Entra con tu cuenta y la frase de cifrado del equipo.</div>
       <div class="field"><label>Usuario</label><input type="text" id="aUser" value="${esc(device?.username||'')}"></div>
-      <div class="field"><label>Contraseña</label><input type="password" id="aPass"></div>
+      <div class="field"><label>Contraseña</label><input type="password" id="aPass"><div class="hint">¿Olvidaste tu contraseña? Pídele a un administrador que te la restablezca.</div></div>
       <div class="field">
         <label>Frase de cifrado del espacio</label>
         <input type="password" id="aPhrase" value="${esc(device?.passphrase||'')}">
@@ -1492,15 +1506,19 @@ function openAuthModal(){
     document.getElementById('recoverPhraseBtn').addEventListener('click', async ()=>{
       const user = document.getElementById('aUser').value.trim().toLowerCase();
       const pass = document.getElementById('aPass').value;
+      if(!user) return showErr('Escribe primero tu usuario.');
+      accounts = await sGet('accounts', true, accounts);
       const acc = accounts[user];
-      if(!acc) return showErr('Escribe primero tu usuario.');
+      if(!acc) return showErr('No existe esa cuenta.');
+      if(!pass) return showErr('Escribe también tu contraseña: la necesito para descifrar la frase guardada.');
       const ok = await verifyPassword(pass, acc);
-      if(!ok) return showErr('Escribe primero tu contraseña correcta; la necesito para descifrar la frase guardada.');
-      const phrase = await recoverPhraseFromEscrow(user, pass);
-      if(!phrase) return showErr('No hay una frase guardada para recuperar en esta cuenta. Pídesela a un compañero.');
-      document.getElementById('aPhrase').value = phrase;
+      if(!ok) return showErr('Esa contraseña no es correcta. Si la olvidaste, pídele a un administrador que te la restablezca (Gestionar miembros → Restablecer contraseña); al entrar con la temporal podrás recuperar la frase aquí.');
+      const result = await recoverPhraseFromEscrow(user, pass);
+      if(result.error==='conexion') return showErr('No se pudo consultar el almacenamiento por un problema de conexión. Espera unos segundos e intenta de nuevo.');
+      if(!result.phrase) return showErr('No hay una frase guardada para recuperar en esta cuenta. Pídele a un administrador que te restablezca la contraseña (así se vuelve a guardar), o pídele la frase a un compañero.');
+      document.getElementById('aPhrase').value = result.phrase;
       showErr('');
-      alert('Frase recuperada y rellenada en el campo. Tu frase de cifrado es:\n\n'+phrase+'\n\nGuárdala en un lugar seguro.');
+      alert('Frase recuperada y rellenada en el campo. Tu frase de cifrado es:\n\n'+result.phrase+'\n\nGuárdala en un lugar seguro.');
     });
     document.getElementById('aSubmit').addEventListener('click', async ()=>{
       const user = document.getElementById('aUser').value.trim().toLowerCase();
@@ -1761,15 +1779,15 @@ function openAdminAddMemberModal(){
       saveBtn.disabled = false; saveBtn.textContent = 'Crear cuenta';
       return err.textContent = 'No se pudo guardar por un problema de conexión. Intenta de nuevo.';
     }
-    await saveEscrow(user, pass, saltHex, currentPassphrase);
+    const escrowOk = await saveEscrow(user, pass, saltHex, currentPassphrase);
     roster = await pGetFresh('roster', roster);
     if(!roster.find(r=>r.username===user)){
-      roster.push({name, color, username:user});
+      roster.push({name, color, username:user, email:accounts[user].email||''});
       await pSet('roster', roster);
     }
     logActivity('admin_creo_cuenta', `Agregó directamente la cuenta de ${name}`, null);
     closeModal();
-    alert(`Cuenta creada para ${name}. Compártele por otro medio: usuario "${user}" y la contraseña temporal — ella podrá cambiarla al entrar.`);
+    alert(`Cuenta creada para ${name}. Compártele por otro medio: usuario "${user}" y la contraseña temporal — ella podrá cambiarla al entrar.`+(escrowOk? '' : '\n\nAviso: no se pudo guardar la copia que le permite recuperar la frase de cifrado por sí misma (problema de conexión). Puedes restablecerle la contraseña en unos minutos para reintentarlo, o pasarle la frase directamente.'));
   });
 }
 
@@ -1902,9 +1920,7 @@ function openPendingApprovalsModal(){
     accounts = await sGet('accounts', true, accounts);
     delete accounts[u];
     await sSet('accounts', accounts, true);
-    const escrow = await sGet('escrow', true, {});
-    delete escrow[u];
-    await sSet('escrow', escrow, true);
+    await removeEscrowFor(u);
     logActivity('admin_rechazo', `Rechazó la solicitud de ${displayName}`, null);
     openPendingApprovalsModal();
   }));
@@ -1941,9 +1957,7 @@ function openManageAdminsModal(){
     accounts = await sGet('accounts', true, accounts);
     delete accounts[u];
     await sSet('accounts', accounts, true);
-    const escrow = await sGet('escrow', true, {});
-    delete escrow[u];
-    await sSet('escrow', escrow, true);
+    await removeEscrowFor(u);
     roster = await pGetFresh('roster', roster);
     roster = roster.filter(r=>r.username!==u);
     await pSet('roster', roster);
@@ -2186,10 +2200,10 @@ function openResetOtherModal(){
       document.getElementById('roError').textContent = 'No se pudo guardar por un problema de conexión. La contraseña anterior de esa persona sigue siendo válida — intenta de nuevo.';
       return;
     }
-    await saveEscrow(user, newPass, saltHex, currentPassphrase);
+    const escrowOk = await saveEscrow(user, newPass, saltHex, currentPassphrase);
     closeModal();
     logActivity('admin_reset_password', `Restableció la contraseña de ${accounts[user].displayName}`, null);
-    alert('Contraseña restablecida para '+accounts[user].displayName+'. Compártesela de forma segura.');
+    alert('Contraseña restablecida para '+accounts[user].displayName+'. Compártesela de forma segura.'+(escrowOk? '' : '\n\nAviso: no se pudo guardar la copia que le permite recuperar la frase de cifrado por sí misma (problema de conexión). Repite el restablecimiento en unos minutos, o pásale la frase directamente.'));
   });
 }
 
