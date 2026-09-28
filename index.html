@@ -1512,7 +1512,7 @@ function openAuthModal(){
       if(!acc) return showErr('No existe esa cuenta.');
       if(!pass) return showErr('Escribe también tu contraseña: la necesito para descifrar la frase guardada.');
       const ok = await verifyPassword(pass, acc);
-      if(!ok) return showErr('Esa contraseña no es correcta. Si la olvidaste, pídele a un administrador que te la restablezca (Gestionar miembros → Restablecer contraseña); al entrar con la temporal podrás recuperar la frase aquí.');
+      if(!ok) return showErr('Esa contraseña no es correcta. Si la olvidaste, pídele a un administrador que te la restablezca; al entrar con la temporal podrás recuperar la frase aquí.');
       const result = await recoverPhraseFromEscrow(user, pass);
       if(result.error==='conexion') return showErr('No se pudo consultar el almacenamiento por un problema de conexión. Espera unos segundos e intenta de nuevo.');
       if(!result.phrase) return showErr('No hay una frase guardada para recuperar en esta cuenta. Pídele a un administrador que te restablezca la contraseña (así se vuelve a guardar), o pídele la frase a un compañero.');
@@ -1936,7 +1936,10 @@ function openManageAdminsModal(){
         <div class="card-row" style="padding:8px 0;border-top:1px solid var(--border)">
           <span class="who"><span class="av" style="background:${a.color}">${initials(a.displayName)}</span>${esc(a.displayName)} (@${esc(u)})</span>
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" data-adm="${esc(u)}" ${a.isAdmin?'checked':''}> Administrador</label>
-          <button class="card-del" data-deluser="${esc(u)}">Eliminar cuenta</button>
+          <span style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+            <button class="link-btn" data-resetuser="${esc(u)}">Restablecer contraseña</button>
+            <button class="card-del" data-deluser="${esc(u)}">Eliminar cuenta</button>
+          </span>
         </div>
       `).join('') : '<div class="empty">Por ahora eres compañía de ti mismo — invita a alguien más.</div>'}
     </div>
@@ -1944,6 +1947,7 @@ function openManageAdminsModal(){
   `;
   document.getElementById('modalBody').innerHTML = html;
   document.getElementById('admClose').addEventListener('click', closeModal);
+  document.querySelectorAll('[data-resetuser]').forEach(b=>b.addEventListener('click', ()=>openResetOtherModal(b.dataset.resetuser)));
   document.querySelectorAll('[data-adm]').forEach(cb=>cb.addEventListener('change', async ()=>{
     accounts = await sGet('accounts', true, accounts);
     accounts[cb.dataset.adm].isAdmin = cb.checked;
@@ -2172,11 +2176,11 @@ function openChangePasswordModal(){
   });
 }
 
-function openResetOtherModal(){
+function openResetOtherModal(preselectUser){
   const others = Object.entries(accounts).filter(([u])=>u!==currentUsername);
   const html = `
     <h3>Restablecer contraseña de un miembro</h3>
-    <div class="field"><label>Miembro</label><select id="roUser">${others.map(([u,a])=>`<option value="${esc(u)}">${esc(a.displayName)} (@${esc(u)})</option>`).join('')}</select></div>
+    <div class="field"><label>Miembro</label><select id="roUser">${others.map(([u,a])=>`<option value="${esc(u)}" ${u===preselectUser?'selected':''}>${esc(a.displayName)} (@${esc(u)})</option>`).join('')}</select></div>
     <div class="field"><label>Contraseña temporal nueva</label><input type="text" id="roPass"></div>
     <div class="hint">Compártesela de forma segura. Al iniciar sesión, esa persona podrá recuperar la frase de cifrado automáticamente con esta contraseña.</div>
     <div class="error-text" id="roError"></div>
