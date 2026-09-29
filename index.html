@@ -689,7 +689,9 @@ async function checkDueDateReminders(){
       (t.due===todayStr || t.due===tomorrowStr)
     );
     if(!dueSoon.length) return;
-    let sent = await pGetFresh('sentReminders', [], []);
+    const sentRead = await pGetCriticalRead('sentReminders');
+    if(!sentRead.ok) return; // don't risk re-sending everyone's reminders over a transient read failure
+    let sent = sentRead.value || [];
     let changed = false;
     for(const t of dueSoon){
       const key = `${t.id}_${t.due}`;
@@ -943,6 +945,17 @@ async function pGetFresh(key, currentValue, fallback, graceMs){
   if(recentWrites[key] && (Date.now()-recentWrites[key]) < graceMs) return currentValue;
   return await pGet(key, fallback===undefined ? currentValue : fallback);
 }
+/* For read-modify-write on a shared list (trash, audit log, notifications, etc.): a plain
+   pGet() would treat a transient connection failure as "the list is empty" and the write
+   that follows would then wipe out everyone else's entries — exactly the bug found in the
+   escrow flow. Use this instead whenever the read result gets written back afterward. */
+async function pGetCriticalRead(key, retries){
+  const raw = await sGetCriticalRead(key, true, retries);
+  if(!raw.ok) return {ok:false};
+  if(!raw.value) return {ok:true, value:null};
+  try{ return {ok:true, value: JSON.parse(await decStr(raw.value, sessionKey))}; }
+  catch(e){ return {ok:true, value:null}; }
+}
 async function pSetChecked(key, value, actionLabel){
   const ok = await pSet(key, value);
   if(!ok){
@@ -952,7 +965,9 @@ async function pSetChecked(key, value, actionLabel){
 }
 async function moveToTrash(type, data, projectId, channelId){
   try{
-    let trash = await pGet('trash', []);
+    const read = await pGetCriticalRead('trash');
+    if(!read.ok) return; // don't risk wiping everyone else's trash over a transient read failure
+    let trash = read.value || [];
     trash.push({id:uid(), type, data, projectId, channelId: channelId||null, deletedBy:me.name, deletedAt:Date.now()});
     if(trash.length>200) trash = trash.slice(trash.length-200);
     await pSet('trash', trash);
@@ -960,7 +975,9 @@ async function moveToTrash(type, data, projectId, channelId){
 }
 async function logActivity(action, details, projectId){
   try{
-    let log = await pGet('auditLog', []);
+    const read = await pGetCriticalRead('auditLog');
+    if(!read.ok) return; // don't risk wiping the project's history over a transient read failure
+    let log = read.value || [];
     log.push({id:uid(), ts:Date.now(), user:me.name, action, details, projectId: projectId===undefined ? currentProjectId : projectId});
     if(log.length>500) log = log.slice(log.length-500);
     await pSet('auditLog', log);
@@ -1230,7 +1247,9 @@ function checkForDMNotifications(otherUsername, msgs){
 }
 async function logEventUpdate(event, action){
   try{
-    let updates = await pGet('eventUpdates', []);
+    const read = await pGetCriticalRead('eventUpdates');
+    if(!read.ok) return; // don't risk wiping everyone else's pending event notifications
+    let updates = read.value || [];
     updates.push({
       id:uid(), ts:Date.now(), eventId:event.id, title:event.title, date:event.date,
       action, editor:me.name, projectId:event.projectId,
@@ -1259,7 +1278,9 @@ function checkForEventNotifications(updates){
 let notifLastOpened = 0;
 async function logNotification({type, title, body, targetNames, projectId, view, channelId}){
   try{
-    let list = await pGet('notifications', []);
+    const read = await pGetCriticalRead('notifications');
+    if(!read.ok) return; // don't risk wiping everyone else's notification history
+    let list = read.value || [];
     list.push({
       id:uid(), ts:Date.now(), type, title, body,
       targetNames: targetNames===undefined ? null : targetNames,
