@@ -1166,6 +1166,124 @@ function renderStorageBlockedScreen(){
   document.getElementById('retryInitBtn').addEventListener('click', init);
 }
 
+/* ================= BLINDAJE: versión, conexión, errores y copias automáticas ================= */
+const APP_VERSION = '2026-10-09.2';
+const SNAP_KEEP = 8;
+const SNAP_KEYS = ['projects','tasks','goals','events','roster','channels'];
+function showAppBanner(id, text, btnLabel, onClick, danger){
+  let el = document.getElementById(id);
+  if(!el){
+    el = document.createElement('div');
+    el.id = id;
+    el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);z-index:9999;padding:10px 14px;border-radius:12px;font-size:13px;font-weight:700;display:flex;gap:10px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.35);max-width:92vw;'+(id==='verBanner'?'bottom:16px;':'top:10px;')+'background:'+(danger?'#b3261e':'var(--accent,#6d5efc)')+';color:#fff';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '<span></span>' + (btnLabel? '<button style="background:#fff;color:#111;border:0;border-radius:8px;padding:5px 10px;font-weight:800;cursor:pointer"></button>' : '');
+  el.firstChild.textContent = text;
+  if(btnLabel){ const b = el.querySelector('button'); b.textContent = btnLabel; b.addEventListener('click', onClick); }
+}
+function hideAppBanner(id){ const el = document.getElementById(id); if(el) el.remove(); }
+async function checkNewVersion(){
+  try{
+    const r = await fetch(location.pathname + '?v=' + Date.now(), {cache:'no-store'});
+    if(!r.ok) return;
+    const t = await r.text();
+    const m = t.match(/const APP_VERSION = '([^']+)'/);
+    if(m && m[1] !== APP_VERSION) showAppBanner('verBanner', 'Hay una versión nueva de la herramienta.', 'Actualizar', ()=>location.reload());
+  }catch(e){}
+}
+window.addEventListener('offline', ()=>showAppBanner('netBanner', 'Sin conexión: los cambios no se guardarán hasta que vuelva internet.', null, null, true));
+window.addEventListener('online', ()=>{ hideAppBanner('netBanner'); checkNewVersion(); });
+if(typeof navigator!=='undefined' && navigator.onLine===false) window.addEventListener('DOMContentLoaded', ()=>showAppBanner('netBanner', 'Sin conexión: los cambios no se guardarán hasta que vuelva internet.', null, null, true));
+
+const clientErrors = [];
+function recordClientError(msg, src){
+  msg = String(msg||'').slice(0,300);
+  if(!msg || /ResizeObserver|Script error\.?$/.test(msg)) return;
+  if(clientErrors.some(e=>e.msg===msg)) return;
+  if(clientErrors.length>=30) clientErrors.shift();
+  clientErrors.push({ts:Date.now(), msg, src:String(src||'').slice(-80), user:(typeof me!=='undefined' && me)? me.name:'', v:APP_VERSION});
+}
+window.addEventListener('error', e=>recordClientError(e.message, (e.filename||'')+':'+(e.lineno||'')));
+window.addEventListener('unhandledrejection', e=>recordClientError((e.reason && e.reason.message) || e.reason, 'promise'));
+async function flushClientErrors(){
+  if(!clientErrors.length || !sessionKey || !me) return;
+  const r = await pGetCriticalRead('errorLog', 1);
+  if(!r.ok) return;
+  const list = Array.isArray(r.value)? r.value : [];
+  const batch = clientErrors.splice(0);
+  const ok = await pSet('errorLog', [...list, ...batch].slice(-60));
+  if(!ok) clientErrors.unshift(...batch);
+}
+async function createSnapshot(label){
+  const data = {};
+  for(const k of SNAP_KEYS){
+    const r = await pGetCriticalRead(k);
+    if(!r.ok) return {ok:false, reason:'No se pudo leer '+k};
+    data[k] = r.value;
+  }
+  const ir = await pGetCriticalRead('snapIndex');
+  if(!ir.ok) return {ok:false, reason:'No se pudo leer el índice'};
+  const idx = Array.isArray(ir.value)? ir.value : [];
+  const id = 'snap:'+Date.now();
+  const meta = {id, ts:Date.now(), label:label||'automático', by:me.name,
+    tasks:(data.tasks||[]).length, goals:(data.goals||[]).length, projects:(data.projects||[]).length};
+  if(!(await pSet(id, {...meta, data}))) return {ok:false, reason:'No se pudo guardar (límite de tamaño o conexión)'};
+  idx.push(meta);
+  while(idx.length>SNAP_KEEP){ const old = idx.shift(); await pSet(old.id, null); }
+  if(!(await pSet('snapIndex', idx))) return {ok:false, reason:'No se pudo actualizar el índice'};
+  return {ok:true, meta};
+}
+async function maybeAutoSnapshot(){
+  if(!isAdmin || !sessionKey) return;
+  try{
+    const ir = await pGetCriticalRead('snapIndex');
+    if(!ir.ok) return;
+    const idx = Array.isArray(ir.value)? ir.value : [];
+    const last = idx.length? idx[idx.length-1].ts : 0;
+    if(Date.now()-last > 20*60*60*1000) await createSnapshot('automático');
+  }catch(e){ recordClientError('Respaldo automático: '+(e&&e.message), 'snapshot'); }
+}
+async function restoreSnapshot(id){
+  const r = await pGetCriticalRead(id);
+  if(!r.ok || !r.value || !r.value.data){ alert('No se pudo leer ese respaldo.'); return; }
+  if(!confirm('Vas a restaurar la copia del '+new Date(r.value.ts).toLocaleString()+'. Se reemplazarán proyectos, tareas, metas, eventos y equipo por los de esa copia (los mensajes no se tocan). Antes se guarda una copia del estado actual. ¿Continuar?')) return;
+  const pre = await createSnapshot('antes de restaurar');
+  if(!pre.ok){ alert('No se restauró nada: no se pudo guardar la copia de seguridad previa ('+pre.reason+').'); return; }
+  for(const k of SNAP_KEYS){
+    if(r.value.data[k]===null || r.value.data[k]===undefined) continue;
+    if(!(await pSetChecked(k, r.value.data[k], 'restauración de '+k))) return;
+  }
+  alert('Copia restaurada. La página se recargará.');
+  location.reload();
+}
+async function openDiagnosticsModal(){
+  document.getElementById('modalBody').innerHTML = '<h3>Diagnóstico y copias</h3><div class="lead">Cargando…</div>';
+  document.getElementById('overlay').classList.add('show');
+  const ir = await pGetCriticalRead('snapIndex');
+  const er = await pGetCriticalRead('errorLog');
+  const idx = (ir.ok && Array.isArray(ir.value))? ir.value.slice().reverse() : [];
+  const errs = (er.ok && Array.isArray(er.value))? er.value.slice().reverse().slice(0,15) : [];
+  document.getElementById('modalBody').innerHTML = `
+    <h3>Diagnóstico y copias</h3>
+    <div class="lead">Versión ${esc(APP_VERSION)} · ${navigator.onLine? 'con conexión':'SIN conexión'} · se guarda una copia automática cada día (se conservan las últimas ${SNAP_KEEP}).</div>
+    <div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:8px 0 4px">Copias automáticas</div>
+    <div style="max-height:26vh;overflow:auto">${idx.length? idx.map(m=>`<div class="card-row" style="padding:6px 0;border-top:1px solid var(--border)"><span style="font-size:12.5px">${esc(new Date(m.ts).toLocaleString())} · ${esc(m.label)}<br><span style="color:var(--text-muted);font-size:11px">${m.projects||0} proyectos · ${m.tasks||0} tareas · ${m.goals||0} metas</span></span><button class="btn small ghost" data-restore="${esc(m.id)}">Restaurar</button></div>`).join('') : '<div class="empty">Aún no hay copias.</div>'}</div>
+    <div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:12px 0 4px">Errores recientes${er.ok?'':' (no se pudo leer)'}</div>
+    <div style="max-height:22vh;overflow:auto;font-size:12px">${errs.length? errs.map(e=>`<div style="padding:4px 0;border-top:1px solid var(--border)"><b>${esc(new Date(e.ts).toLocaleString())}</b> · ${esc(e.user||'')} · v${esc(e.v||'')}<br>${esc(e.msg)}</div>`).join('') : '<div class="empty">Sin errores registrados.</div>'}</div>
+    <div class="modal-actions" style="flex-wrap:wrap"><button class="btn ghost" id="dgClose">Cerrar</button><button class="btn ghost" id="dgClear">Limpiar errores</button><button class="btn ghost" id="dgDownload">Descargar respaldo</button><button class="btn primary" id="dgSnap">Crear copia ahora</button></div>`;
+  document.getElementById('dgClose').addEventListener('click', closeModal);
+  document.getElementById('dgDownload').addEventListener('click', exportAllData);
+  document.getElementById('dgClear').addEventListener('click', async ()=>{ await pSet('errorLog', []); openDiagnosticsModal(); });
+  document.getElementById('dgSnap').addEventListener('click', async ()=>{
+    const b = document.getElementById('dgSnap'); b.disabled = true; b.textContent = 'Guardando…';
+    const res = await createSnapshot('manual');
+    if(!res.ok) alert('No se pudo crear la copia: '+res.reason);
+    openDiagnosticsModal();
+  });
+  document.querySelectorAll('[data-restore]').forEach(b=>b.addEventListener('click', ()=>restoreSnapshot(b.dataset.restore)));
+}
+
 function startBackgroundLoops(){
   if(pollingStarted) return;
   pollingStarted = true;
@@ -1174,6 +1292,11 @@ function startBackgroundLoops(){
   setInterval(checkDueDateReminders, 30*60*1000); // every 30 min
   setInterval(checkWeeklyDigest, 30*60*1000); // checks if it's Monday, sends once
   setTimeout(checkDueDateReminders, 5000); // once shortly after login
+  setInterval(flushClientErrors, 2*60*1000);
+  setInterval(checkNewVersion, 5*60*1000);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) checkNewVersion(); });
+  setTimeout(maybeAutoSnapshot, 20000);
+  setInterval(maybeAutoSnapshot, 6*60*60*1000);
 }
 
 async function ensureRoster(){
@@ -1754,6 +1877,7 @@ async function openAccountMenu(){
       ${isMaster? `<button class="btn block" id="menuInviteCode">Cambiar código de invitación</button>`:''}
       ${isMaster? `<button class="btn block" id="menuAllProjects">Resumen de todos los proyectos</button>`:''}
       ${isAdmin? `<button class="btn block" id="menuStorage">Uso de almacenamiento</button>`:''}
+      ${isAdmin? `<button class="btn block" id="menuDiag">🛡 Diagnóstico y copias</button>`:''}
       <button class="btn block" id="menuLogout" style="color:var(--danger)">Cerrar sesión</button>
       <button class="btn ghost block" id="menuClose">Cancelar</button>
     </div>
@@ -1768,6 +1892,8 @@ async function openAccountMenu(){
   document.getElementById('menuExport').addEventListener('click', exportAllData);
   document.getElementById('menuExportProject').addEventListener('click', exportProjectData);
   document.getElementById('menuNotify').addEventListener('click', enableBrowserNotifications);
+  const diagBtn = document.getElementById('menuDiag');
+  if(diagBtn) diagBtn.addEventListener('click', openDiagnosticsModal);
   const addMemberBtn = document.getElementById('menuAddMember');
   if(addMemberBtn) addMemberBtn.addEventListener('click', openAdminAddMemberModal);
   const digestBtn = document.getElementById('menuDigestNow');
