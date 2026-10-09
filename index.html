@@ -1666,6 +1666,23 @@ async function onLoggedIn(){
       alert('Hubo un problema de conexión guardando la configuración inicial de proyectos. Por favor recarga la página e inicia sesión de nuevo antes de seguir usando la app.');
     }
   }
+  // Reparación única: "monitoreo y alianzas" debe ser visible para todo el equipo (se aplica una sola vez, al entrar un administrador)
+  if(isAdmin){
+    try{
+      const fixP = projects.find(p=>!p.isGeneral && !p.allTeamAdded && (p.name||'').trim().toLowerCase()==='monitoreo y alianzas');
+      if(fixP && Object.keys(accounts||{}).length){
+        const res = await pGetCriticalRead('projects');
+        const fresh = (res && res.ok && Array.isArray(res.value)) ? res.value : null;
+        const target = fresh ? fresh.find(p=>p.id===fixP.id) : null;
+        if(target && !target.allTeamAdded){
+          const everyone = Object.entries(accounts).filter(([u,a])=>a.status!=='pending').map(([u])=>u);
+          target.members = [...new Set([...(target.members||[]), ...everyone])];
+          target.allTeamAdded = true;
+          if(await pSetChecked('projects', fresh, 'reparación de visibilidad')){ projects = fresh; logActivity('proyecto_miembro', 'Agregó a todo el equipo al proyecto "'+target.name+'"', null); }
+        }
+      }
+    }catch(e){ console.warn('reparación de proyecto omitida', e); }
+  }
   const accessible = myProjects();
   const general = projects.find(p=>p.isGeneral);
   currentProjectId = (general && accessible.some(p=>p.id===general.id)) ? general.id : (accessible[0]?.id || null);
