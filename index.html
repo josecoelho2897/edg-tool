@@ -4778,21 +4778,26 @@ function openProjectMembersModal(project){
 function openNewProjectModal(){
   const html = `
     <h3>Nuevo proyecto</h3>
-    <div class="lead">Solo tú y quienes agregues después podrán verlo.</div>
+    <div class="lead">Solo verán este proyecto quienes elijas abajo (tú y los administradores siempre).</div>
     <div class="field"><label>Nombre</label><input type="text" id="pName"></div>
     <div class="field"><label>Descripción</label><textarea id="pDesc"></textarea></div>
+    <div class="field"><label>Miembros</label>
+      <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><input type="checkbox" id="pAll"> <b>Todo el equipo</b></label>
+      <div style="max-height:180px;overflow:auto;display:grid;gap:4px">${roster.filter(r=>r.username!==currentUsername).map(r=>`<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" class="pMem" value="${esc(r.username)}"> ${esc(r.name||r.username)}</label>`).join('')}</div>
+    </div>
     <div class="modal-actions"><button class="btn ghost" id="pCancel">Cancelar</button><button class="btn primary" id="pSave">Crear proyecto</button></div>
   `;
   document.getElementById('modalBody').innerHTML = html;
   document.getElementById('overlay').classList.add('show');
   document.getElementById('pCancel').addEventListener('click', closeModal);
+  document.getElementById('pAll').addEventListener('change', e=>{ document.querySelectorAll('.pMem').forEach(c=>{c.checked=e.target.checked;}); });
   document.getElementById('pSave').addEventListener('click', async ()=>{
     const name = document.getElementById('pName').value.trim();
     if(!name) return;
     projects = await pGetFresh('projects', projects);
     const newProj = {
       id:uid(), name, description:document.getElementById('pDesc').value.trim(),
-      isGeneral:false, members:[currentUsername], createdBy:me.name, createdAt:Date.now()
+      isGeneral:false, members:[currentUsername, ...Array.from(document.querySelectorAll('.pMem:checked')).map(c=>c.value)], createdBy:me.name, createdAt:Date.now()
     };
     projects.push(newProj);
     if(!(await pSetChecked('projects', projects, 'nuevo proyecto'))) return;
