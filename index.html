@@ -1687,7 +1687,10 @@ async function onLoggedIn(){
 }
 
 function myProjects(){
-  return projects.filter(p=>p.isGeneral || isAdmin || (p.members||[]).includes(currentUsername));
+  return projects.filter(p=>p.isGeneral || isAdmin || (p.members||[]).includes(currentUsername) || (me && p.createdBy===me.name));
+}
+function canManageProject(proj){
+  return !!proj && !proj.isGeneral && (isAdmin || (me && proj.createdBy===me.name));
 }
 function projectMembers(project){
   if(!project) return [];
@@ -3456,6 +3459,7 @@ function renderTasks(){
   content.querySelectorAll('[data-taskboardopen]').forEach(b=>b.addEventListener('click', ()=>{
     currentTaskBoardId = b.dataset.taskboardopen; view='taskBoard'; renderShell(); renderMain();
   }));
+  content.querySelectorAll('[data-stagesmgr]').forEach(b=>b.addEventListener('click', e=>{ e.stopPropagation(); openStagesManagerModal(b.dataset.stagesmgr); }));
   content.querySelectorAll('[data-stagedone]').forEach(b=>b.addEventListener('click', async ()=>{
     const [taskId, stageId] = b.dataset.stagedone.split('|');
     await markStageComplete(taskId, stageId);
@@ -3599,7 +3603,7 @@ function stageUnlocked(task, stage){
 function truncateText(str, n){ return str.length>n ? str.slice(0,n-1)+'…' : str; }
 function renderStagesBlock(t){
   const stages = t.stages||[];
-  if(!stages.length) return '';
+  if(!stages.length) return canEditStages(t)? `<div style="margin-top:6px"><button class="link-btn" data-stagesmgr="${t.id}" style="font-size:11px">＋ Agregar etapas</button></div>` : '';
   const doneCount = stages.filter(s=>s.status==='done').length;
   const boxW = 132, boxH = 58, gap = 26;
   const railY = 16, circR = 7, boxTop = 40;
@@ -3636,7 +3640,7 @@ function renderStagesBlock(t){
   });
   const actionableForMe = actionable.filter(s=>me.name===s.responsible || isAdmin);
   return `<div style="margin-top:8px">
-    <div class="card-row" style="margin-top:0"><span style="font-size:11px;color:var(--text-muted)">Etapas</span><span style="display:flex;align-items:center;gap:10px"><button class="link-btn" data-taskboardopen="${t.id}" style="font-size:11px">🗺 Ver tablero</button><span style="font-size:11px;color:${doneCount===stages.length?'var(--accent-2)':'var(--text-muted)'};font-weight:800">${doneCount}/${stages.length}</span></span></div>
+    <div class="card-row" style="margin-top:0"><span style="font-size:11px;color:var(--text-muted)">Etapas</span><span style="display:flex;align-items:center;gap:10px">${canEditStages(t)? `<button class="link-btn" data-stagesmgr="${t.id}" style="font-size:11px">✎ Editar etapas</button>`:''}<button class="link-btn" data-taskboardopen="${t.id}" style="font-size:11px">🗺 Ver tablero</button><span style="font-size:11px;color:${doneCount===stages.length?'var(--accent-2)':'var(--text-muted)'};font-weight:800">${doneCount}/${stages.length}</span></span></div>
     <div style="overflow-x:auto;margin:6px 0">
       <svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="display:block">
         <line x1="${railX1}" y1="${railY}" x2="${railX2}" y2="${railY}" stroke="var(--border)" stroke-width="3" stroke-linecap="round"/>
@@ -4108,70 +4112,184 @@ function wireTaskBoardDrag(taskId){
     });
   });
 }
+let stageMgrReturn = null;
+function canEditStages(task){
+  if(!task) return false;
+  return isAdmin || me.name===task.assignee || me.name===task.createdBy || (task.stages||[]).some(s=>s.responsible===me.name);
+}
+function stageDependsOn(task, startId, targetId, seen){
+  seen = seen || new Set();
+  if(seen.has(startId)) return false;
+  seen.add(startId);
+  const st = (task.stages||[]).find(x=>x.id===startId);
+  if(!st) return false;
+  return (st.dependsOn||[]).some(d=> d===targetId || stageDependsOn(task, d, targetId, seen));
+}
+function collectNewlyUnlocked(task){
+  const out = [];
+  (task.stages||[]).forEach(st=>{
+    if(st.status==='pending' && !st.notifiedTurn && stageUnlocked(task, st)){ st.notifiedTurn = true; out.push(st); }
+  });
+  return out;
+}
+function afterStageChange(taskId){
+  closeModal();
+  if(view==='taskBoard') renderTaskBoard(); else if(view==='tasks') renderTasks();
+  if(stageMgrReturn===taskId) openStagesManagerModal(taskId);
+}
+function backFromStageModal(taskId){
+  if(stageMgrReturn===taskId) openStagesManagerModal(taskId); else closeModal();
+}
+function openStagesManagerModal(taskId){
+  const task = tasks.find(x=>x.id===taskId);
+  if(!task) return;
+  if(!canEditStages(task)){ alert('Solo el creador, el responsable, quienes tienen una etapa o un administrador pueden editar las etapas.'); return; }
+  stageMgrReturn = taskId;
+  const stages = task.stages||[];
+  const rows = stages.map((st,i)=>{
+    const done = st.status==='done';
+    const unlocked = stageUnlocked(task, st);
+    const state = done? '✓ Lista' : unlocked? '▶ En turno' : '🔒 Esperando';
+    const deps = (st.dependsOn||[]).map(d=>{ const x=stages.find(y=>y.id===d); return x? x.title : null; }).filter(Boolean);
+    return `<div class="kr" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <b style="color:var(--text-muted)">${i+1}.</b>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:700">${esc(st.title)}</div>
+        <div style="font-size:11px;color:var(--text-muted)">${esc(st.responsible||'Sin responsable')} · ${state}${deps.length? ' · después de: '+esc(deps.join(', ')) : ''}</div>
+      </div>
+      <button class="btn small ghost" data-mgredit="${st.id}">Editar</button>
+    </div>`;
+  }).join('');
+  document.getElementById('modalBody').innerHTML = `
+    <h3>Etapas de la tarea</h3>
+    <div class="lead">${esc(task.title)} — puedes cambiar nombres, responsables y orden, agregar o quitar etapas aunque la tarea ya esté en marcha.</div>
+    <div style="max-height:50vh;overflow-y:auto">${rows || '<div class="empty">Esta tarea aún no tiene etapas.</div>'}</div>
+    <div class="modal-actions"><button class="btn ghost" id="mgrClose">Cerrar</button><button class="btn primary" id="mgrAdd">＋ Agregar etapa</button></div>
+  `;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('mgrClose').addEventListener('click', ()=>{ stageMgrReturn=null; closeModal(); if(view==='tasks') renderTasks(); else if(view==='taskBoard') renderTaskBoard(); });
+  document.getElementById('mgrAdd').addEventListener('click', ()=>openAddStageToBoardModal(taskId));
+  document.querySelectorAll('[data-mgredit]').forEach(b=>b.addEventListener('click', ()=>openEditStageModal(taskId, b.dataset.mgredit)));
+}
 function openEditStageModal(taskId, stageId){
   const task = tasks.find(x=>x.id===taskId);
   if(!task) return;
   const stage = task.stages.find(s=>s.id===stageId);
   if(!stage) return;
   const members = projectMembers(projects.find(p=>p.id===task.projectId));
-  const stages = task.stages;
-  let activeIdx = stages.findIndex(s=>s.status!=='done');
-  if(activeIdx===-1) activeIdx = stages.length;
-  const idx = stages.findIndex(s=>s.id===stageId);
-  const canMarkDone = idx===activeIdx && stage.status!=='done' && (me.name===stage.responsible || isAdmin);
+  const canEdit = canEditStages(task);
+  const canMarkDone = stage.status!=='done' && stageUnlocked(task, stage) && (me.name===stage.responsible || isAdmin);
+  const others = task.stages.filter(x=>x.id!==stageId);
+  const depChecks = others.map(o=>{
+    const blocked = stageDependsOn(task, o.id, stageId);
+    const checked = (stage.dependsOn||[]).includes(o.id);
+    return `<label style="display:flex;gap:8px;align-items:center;font-size:13px;${blocked?'opacity:.45':''}"><input type="checkbox" class="esDep" value="${o.id}" ${checked?'checked':''} ${blocked?'disabled':''}> ${esc(o.title)}${blocked?' (depende de esta)':''}</label>`;
+  }).join('');
+  const respOptions = members.map(m=>m.name);
+  if(stage.responsible && !respOptions.includes(stage.responsible)) respOptions.unshift(stage.responsible);
   const html = `
     <h3>Editar etapa</h3>
-    <div class="field"><label>Nombre</label><input type="text" id="esTitle" value="${esc(stage.title)}"></div>
-    <div class="field"><label>Responsable</label><select id="esResp">${members.map(m=>`<option ${m.name===stage.responsible?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div>
-    ${canMarkDone? `<button class="btn primary" id="esMarkDone" style="width:100%;margin-bottom:10px">Marcar esta etapa como lista</button>`:''}
-    <div class="modal-actions"><button class="btn ghost" id="esCancel">Cancelar</button><button class="btn primary" id="esSave">Guardar</button></div>
+    <div class="field"><label>Nombre</label><input type="text" id="esTitle" value="${esc(stage.title)}" ${canEdit?'':'disabled'}></div>
+    <div class="field"><label>Responsable</label><select id="esResp" ${canEdit?'':'disabled'}>${respOptions.map(n=>`<option ${n===stage.responsible?'selected':''}>${esc(n)}</option>`).join('')}</select></div>
+    ${canEdit && others.length? `<div class="field"><label>Se activa cuando terminen (vacío = libre)</label><div style="display:grid;gap:4px;max-height:140px;overflow:auto">${depChecks}</div></div>`:''}
+    ${canMarkDone? `<button class="btn primary" id="esMarkDone" style="width:100%;margin-bottom:8px">Marcar esta etapa como lista</button>`:''}
+    ${canEdit && stage.status==='done'? `<button class="btn ghost" id="esReopen" style="width:100%;margin-bottom:8px">↩ Reabrir esta etapa</button>`:''}
+    ${canEdit? `<button class="btn ghost" id="esDelete" style="width:100%;margin-bottom:8px;color:var(--danger,#e5484d)">Eliminar etapa</button>`:''}
+    <div class="modal-actions"><button class="btn ghost" id="esCancel">Cancelar</button>${canEdit? '<button class="btn primary" id="esSave">Guardar</button>':''}</div>
   `;
   document.getElementById('modalBody').innerHTML = html;
   document.getElementById('overlay').classList.add('show');
-  document.getElementById('esCancel').addEventListener('click', closeModal);
+  document.getElementById('esCancel').addEventListener('click', ()=>backFromStageModal(taskId));
   const markBtn = document.getElementById('esMarkDone');
   if(markBtn) markBtn.addEventListener('click', async ()=>{
     await markStageComplete(taskId, stageId);
-    closeModal();
-    renderTaskBoard();
+    afterStageChange(taskId);
   });
-  document.getElementById('esSave').addEventListener('click', async ()=>{
+  const reopen = document.getElementById('esReopen');
+  if(reopen) reopen.addEventListener('click', async ()=>{
+    tasks = await pGetFresh('tasks', tasks);
+    const tk = tasks.find(x=>x.id===taskId); const st = tk && tk.stages.find(x=>x.id===stageId);
+    if(!st) return;
+    st.status = 'pending'; st.notifiedTurn = true;
+    if(tk.status==='done') tk.status = 'doing';
+    if(!(await pSetChecked('tasks', tasks, 'reapertura de etapa'))) return;
+    logActivity('etapa_reabierta', `Reabrió la etapa "${st.title}" de "${tk.title}"`);
+    afterStageChange(taskId);
+  });
+  const del = document.getElementById('esDelete');
+  if(del) del.addEventListener('click', async ()=>{
+    if(!confirm('¿Eliminar esta etapa? Las etapas que dependían de ella pasarán a depender de las anteriores.')) return;
+    tasks = await pGetFresh('tasks', tasks);
+    const tk = tasks.find(x=>x.id===taskId); if(!tk) return;
+    const gone = tk.stages.find(x=>x.id===stageId); if(!gone) return;
+    const inherit = gone.dependsOn || [];
+    tk.stages = tk.stages.filter(x=>x.id!==stageId);
+    tk.stages.forEach(x=>{
+      if((x.dependsOn||[]).includes(stageId)){
+        x.dependsOn = [...new Set([...(x.dependsOn||[]).filter(d=>d!==stageId), ...inherit])];
+      }
+    });
+    if(tk.stagesLayout) delete tk.stagesLayout[stageId];
+    const unlocked = collectNewlyUnlocked(tk);
+    if(!(await pSetChecked('tasks', tasks, 'eliminación de etapa'))) return;
+    logActivity('etapa_eliminada', `Eliminó la etapa "${gone.title}" de "${tk.title}"`);
+    for(const u of unlocked) notifyStageTurn(tk, u);
+    afterStageChange(taskId);
+  });
+  const save = document.getElementById('esSave');
+  if(save) save.addEventListener('click', async ()=>{
     const title = document.getElementById('esTitle').value.trim();
     if(!title) return;
     tasks = await pGetFresh('tasks', tasks);
-    const tk = tasks.find(x=>x.id===taskId);
-    const st = tk.stages.find(s=>s.id===stageId);
+    const tk = tasks.find(x=>x.id===taskId); const st = tk && tk.stages.find(x=>x.id===stageId);
+    if(!st) return;
+    const prevResp = st.responsible;
     st.title = title; st.responsible = document.getElementById('esResp').value;
+    if(document.querySelector('.esDep') || !others.length){
+      st.dependsOn = Array.from(document.querySelectorAll('.esDep:checked')).map(c=>c.value);
+    }
+    const unlocked = collectNewlyUnlocked(tk);
+    if(st.status==='pending' && st.responsible!==prevResp && stageUnlocked(tk, st) && !unlocked.includes(st)) unlocked.push(st);
     if(!(await pSetChecked('tasks', tasks, 'edición de etapa'))) return;
-    closeModal();
-    renderTaskBoard();
+    logActivity('etapa_editada', `Editó la etapa "${title}" de "${tk.title}"`);
+    for(const u of unlocked) notifyStageTurn(tk, u);
+    afterStageChange(taskId);
   });
 }
 function openAddStageToBoardModal(taskId){
   const task = tasks.find(x=>x.id===taskId);
   if(!task) return;
   const members = projectMembers(projects.find(p=>p.id===task.projectId));
+  const stages = task.stages||[];
+  const lastId = stages.length? stages[stages.length-1].id : '';
   const html = `
     <h3>Nueva etapa</h3>
     <div class="field"><label>Nombre</label><input type="text" id="nsTitle" placeholder="Ej. Revisar y aprobar"></div>
     <div class="field"><label>Responsable</label><select id="nsResp">${members.map(m=>`<option>${esc(m.name)}</option>`).join('')}</select></div>
+    ${stages.length? `<div class="field"><label>Se activa después de</label><select id="nsAfter"><option value="">— Libre (sin conexión) —</option>${stages.map(x=>`<option value="${x.id}" ${x.id===lastId?'selected':''}>${esc(x.title)}</option>`).join('')}</select></div>`:''}
     <div class="modal-actions"><button class="btn ghost" id="nsCancel">Cancelar</button><button class="btn primary" id="nsSave">Agregar</button></div>
   `;
   document.getElementById('modalBody').innerHTML = html;
   document.getElementById('overlay').classList.add('show');
-  document.getElementById('nsCancel').addEventListener('click', closeModal);
+  document.getElementById('nsCancel').addEventListener('click', ()=>backFromStageModal(taskId));
   document.getElementById('nsSave').addEventListener('click', async ()=>{
     const title = document.getElementById('nsTitle').value.trim();
     if(!title) return;
+    const afterSel = document.getElementById('nsAfter');
+    const afterId = afterSel? afterSel.value : '';
     tasks = await pGetFresh('tasks', tasks);
     const tk = tasks.find(x=>x.id===taskId);
-    const newStage = {id:uid(), title, responsible:document.getElementById('nsResp').value, status:'pending', dependsOn:[], notifiedTurn:true};
+    if(!tk) return;
+    tk.stages = tk.stages || [];
+    const newStage = {id:uid(), title, responsible:document.getElementById('nsResp').value, status:'pending',
+      dependsOn: afterId && tk.stages.some(x=>x.id===afterId) ? [afterId] : [], notifiedTurn:false};
     tk.stages.push(newStage);
+    if(tk.status==='done') tk.status = 'doing';
+    const unlocked = collectNewlyUnlocked(tk);
     if(!(await pSetChecked('tasks', tasks, 'nueva etapa'))) return;
     logActivity('etapa_agregada', `Agregó la etapa "${title}" a "${tk.title}"`);
-    notifyStageTurn(tk, newStage);
-    closeModal();
-    renderTaskBoard();
+    for(const u of unlocked) notifyStageTurn(tk, u);
+    afterStageChange(taskId);
   });
 }
 function openTaskModal(){
@@ -4355,10 +4473,8 @@ function openTaskDetailModal(taskId){
         ${t.subtasks.map((s,i)=>`<div class="kr ${s.done?'done':''}"><input type="checkbox" ${s.done?'checked':''} data-detailsubtoggle="${i}"><span style="font-size:13px"><b style="color:var(--text-muted)">${i+1}.</b> ${esc(s.text)}</span></div>`).join('')}
       </div>
     `:''}
-    ${t.stages && t.stages.length? `
-      <div style="font-size:12px;color:var(--text-muted);font-weight:700;margin-bottom:6px">Etapas (relevo)</div>
-      <div style="margin-bottom:14px">${renderStagesBlock(t)}</div>
-    `:''}
+    <div style="font-size:12px;color:var(--text-muted);font-weight:700;margin-bottom:6px">Etapas (relevo)</div>
+    <div style="margin-bottom:14px">${renderStagesBlock(t) || '<div class="empty" style="padding:4px 0">Sin etapas.</div>'}</div>
     <hr style="border-color:var(--border);margin:12px 0">
     <div style="font-size:12.5px;color:var(--text-muted);font-weight:700;margin-bottom:8px">Comentarios</div>
     <div id="taskCommentList" style="max-height:35vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
@@ -4388,6 +4504,7 @@ function openTaskDetailModal(taskId){
     if(!(await pSetChecked('tasks', tasks, 'subtarea'))){ task.subtasks[idx].done = prev; return; }
     openTaskDetailModal(taskId);
   }));
+  document.querySelectorAll('[data-stagesmgr]').forEach(b=>b.addEventListener('click', ()=>openStagesManagerModal(b.dataset.stagesmgr)));
   document.querySelectorAll('[data-stagedone]').forEach(b=>b.addEventListener('click', async ()=>{
     const [tId, stageId] = b.dataset.stagedone.split('|');
     await markStageComplete(tId, stageId);
@@ -4717,13 +4834,14 @@ function renderTeam(){
   const members = projectMembers(proj);
   const top = document.getElementById('topbar');
   top.innerHTML = `${menuToggleHtml()}<h2>Equipo · ${esc(proj?.name||'')}</h2><div class="grow"></div>
-    ${isAdmin && proj && !proj.isGeneral? `<button class="btn primary" id="addMemberBtn">+ Agregar miembro</button>`:''}
+    ${canManageProject(proj)? `<button class="btn primary" id="addMemberBtn">+ Agregar miembro</button>`:''}
   `;
   wireMenuToggle();
   const addBtn = document.getElementById('addMemberBtn');
   if(addBtn) addBtn.addEventListener('click', ()=>openProjectMembersModal(proj));
   const content = document.getElementById('content');
-  content.innerHTML = `<div class="team-grid">
+  const lonely = canManageProject(proj) && members.length<=1;
+  content.innerHTML = (lonely? `<div class="card" style="margin-bottom:12px;border-color:var(--accent)"><div style="font-size:13px"><b>Solo tú ves este proyecto.</b> Agrega a tu equipo para que también lo vean.</div><div style="margin-top:8px"><button class="btn small primary" id="addAllBtn">Agregar a todo el equipo</button></div></div>`:'') + `<div class="team-grid">
     ${members.map(r=>`
       <div class="team-card">
         <div class="av" style="background:${r.color}">${initials(r.name)}</div>
@@ -4731,10 +4849,12 @@ function renderTeam(){
           <div class="name">${esc(r.name)}${me&&r.name===me.name?' (tú)':''}</div>
           <div class="status ${isOnline(r.name)?'on':''}"><span class="sdot"></span>${isOnline(r.name)?'En línea':'Desconectado'}</div>
         </div>
-        ${isAdmin && proj && !proj.isGeneral? `<button class="card-del" data-removemember="${esc(r.username||'')}">Quitar</button>`:''}
+        ${canManageProject(proj)? `<button class="card-del" data-removemember="${esc(r.username||'')}">Quitar</button>`:''}
       </div>
     `).join('') || '<div class="empty">Nadie asignado a este proyecto todavía.</div>'}
   </div>`;
+  const allBtn = document.getElementById('addAllBtn');
+  if(allBtn) allBtn.addEventListener('click', ()=>addAllToProject(proj.id));
   content.querySelectorAll('[data-removemember]').forEach(b=>b.addEventListener('click', async ()=>{
     projects = await pGetFresh('projects', projects);
     const p = projects.find(x=>x.id===currentProjectId);
@@ -4745,12 +4865,23 @@ function renderTeam(){
   }));
 }
 
+async function addAllToProject(projectId){
+  projects = await pGetFresh('projects', projects);
+  const p = projects.find(x=>x.id===projectId);
+  if(!p) return;
+  const everyone = Object.entries(accounts).filter(([u,a])=>a.status!=='pending').map(([u])=>u);
+  p.members = [...new Set([...(p.members||[]), ...everyone])];
+  if(!(await pSetChecked('projects', projects, 'agregar a todo el equipo'))) return;
+  logActivity('proyecto_miembro', `Agregó a todo el equipo al proyecto "${p.name}"`, null);
+  if(view==='team') renderTeam(); else closeModal();
+}
 function openProjectMembersModal(project){
   const currentMembers = new Set(project.members||[]);
   const candidates = Object.entries(accounts).filter(([u,a])=>a.status!=='pending' && !currentMembers.has(u));
   const html = `
     <h3>Agregar miembros a "${esc(project.name)}"</h3>
     <div class="lead">Solo las personas que agregues aquí podrán ver este proyecto.</div>
+    ${candidates.length>1? `<button class="btn small primary" id="pmAll" style="margin-bottom:8px">Agregar a todo el equipo</button>`:''}
     <div id="candList">
       ${candidates.length? candidates.map(([u,a])=>`
         <div class="card-row" style="padding:8px 0;border-top:1px solid var(--border)">
@@ -4764,6 +4895,8 @@ function openProjectMembersModal(project){
   document.getElementById('modalBody').innerHTML = html;
   document.getElementById('overlay').classList.add('show');
   document.getElementById('pmClose').addEventListener('click', closeModal);
+  const pmAll = document.getElementById('pmAll');
+  if(pmAll) pmAll.addEventListener('click', async ()=>{ await addAllToProject(project.id); closeModal(); if(view==='team') renderTeam(); });
   document.querySelectorAll('[data-addmember]').forEach(b=>b.addEventListener('click', async ()=>{
     projects = await pGetFresh('projects', projects);
     const p = projects.find(x=>x.id===project.id);
