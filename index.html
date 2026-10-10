@@ -1248,7 +1248,7 @@ function renderStorageBlockedScreen(){
 }
 
 /* ================= BLINDAJE: versión, conexión, errores y copias automáticas ================= */
-const APP_VERSION = '2026-10-10.12';
+const APP_VERSION = '2026-10-10.13';
 const SNAP_KEEP = 8;
 const SNAP_KEYS = ['projects','tasks','goals','events','roster','channels'];
 function showAppBanner(id, text, btnLabel, onClick, danger){
@@ -4545,6 +4545,50 @@ function wireTaskBoardDrag(taskId){
     });
   });
 }
+/* ---- Plantillas de flujo (secuencias de etapas reutilizables) ---- */
+const BASE_FLOW_TEMPLATES = [
+  {id:'base:aprobacion', base:true, name:'Redactar → Revisar → Aprobar', steps:[{title:'Redactar borrador',responsible:''},{title:'Revisar',responsible:''},{title:'Aprobar',responsible:''}]},
+  {id:'base:envio', base:true, name:'Preparar → Enviar → Dar seguimiento', steps:[{title:'Preparar documento',responsible:''},{title:'Enviar',responsible:''},{title:'Dar seguimiento',responsible:''}]},
+  {id:'base:evento', base:true, name:'Organizar un evento', steps:[{title:'Definir agenda y convocatoria',responsible:''},{title:'Confirmar participantes',responsible:''},{title:'Realizar el evento',responsible:''},{title:'Elaborar acta o memoria',responsible:''}]}
+];
+async function loadFlowTemplates(){
+  const mine = await pGet('flowTemplates', []);
+  return [...BASE_FLOW_TEMPLATES, ...(Array.isArray(mine)? mine : [])];
+}
+async function saveFlowTemplate(name, steps){
+  const r = await pGetCriticalRead('flowTemplates');
+  if(!r.ok){ alert('No se pudo guardar la plantilla por un problema de conexión. Intenta de nuevo en unos segundos.'); return false; }
+  const list = Array.isArray(r.value)? r.value : [];
+  list.push({id:uid(), name, steps:steps.map(x=>({title:x.title, responsible:x.responsible||''})), createdBy:me.name, createdAt:Date.now()});
+  if(!(await pSetChecked('flowTemplates', list, 'plantilla de flujo'))) return false;
+  logActivity('plantilla_creada', `Creó la plantilla de flujo "${name}"`, null);
+  return true;
+}
+async function deleteFlowTemplate(id){
+  const r = await pGetCriticalRead('flowTemplates');
+  if(!r.ok){ alert('No se pudo eliminar por un problema de conexión. Intenta de nuevo.'); return false; }
+  const list = (Array.isArray(r.value)? r.value : []).filter(t=>t.id!==id);
+  return await pSetChecked('flowTemplates', list, 'eliminación de plantilla');
+}
+async function applyTemplateToTask(taskId, tpl){
+  tasks = await pGetFresh('tasks', tasks);
+  const tk = tasks.find(x=>x.id===taskId); if(!tk) return false;
+  const members = projectMembers(projects.find(p=>p.id===tk.projectId)).map(m=>m.name);
+  tk.stages = tk.stages || [];
+  let prev = tk.stages.length? tk.stages[tk.stages.length-1].id : null;
+  tpl.steps.forEach(step=>{
+    const id = uid();
+    const resp = members.includes(step.responsible)? step.responsible : (tk.assignee || me.name);
+    tk.stages.push({id, title:step.title, responsible:resp, status:'pending', dependsOn: prev? [prev] : [], notifiedTurn:false});
+    prev = id;
+  });
+  if(tk.status==='done') tk.status = 'doing';
+  const unlocked = collectNewlyUnlocked(tk);
+  if(!(await pSetChecked('tasks', tasks, 'plantilla aplicada'))) return false;
+  logActivity('etapa_agregada', `Aplicó la plantilla "${tpl.name}" a "${tk.title}"`);
+  for(const u of unlocked) notifyStageTurn(tk, u);
+  return true;
+}
 let stageMgrReturn = null;
 function canEditStages(task){
   if(!task) return false;
@@ -4597,12 +4641,38 @@ function openStagesManagerModal(taskId){
     <h3>Etapas de la tarea</h3>
     <div class="lead">${esc(task.title)} — puedes cambiar nombres, responsables y orden, agregar o quitar etapas aunque la tarea ya esté en marcha.</div>
     <div style="max-height:50vh;overflow-y:auto">${rows || '<div class="empty">Esta tarea aún no tiene etapas.</div>'}</div>
+    <div style="display:flex;gap:6px;margin-top:12px;align-items:center">
+      <select id="mgrTpl" style="flex:1;min-width:0;width:auto;padding:8px 10px;font:inherit;border:1px solid var(--border,#d0d7e2);border-radius:8px;background:var(--surface,#fff);color:inherit"><option value="">Aplicar plantilla de flujo…</option></select>
+      <button class="btn small" id="mgrTplApply" style="flex:none;white-space:nowrap" disabled>Aplicar</button>
+    </div>
+    ${stages.length? `<button class="link-btn" id="mgrTplSave" style="margin-top:8px">💾 Guardar estas etapas como plantilla</button>`:''}
     <div class="modal-actions"><button class="btn ghost" id="mgrClose">Cerrar</button><button class="btn primary" id="mgrAdd">＋ Agregar etapa</button></div>
   `;
   document.getElementById('overlay').classList.add('show');
   document.getElementById('mgrClose').addEventListener('click', ()=>{ stageMgrReturn=null; closeModal(); if(view==='tasks') renderTasks(); else if(view==='taskBoard') renderTaskBoard(); });
   document.getElementById('mgrAdd').addEventListener('click', ()=>openAddStageToBoardModal(taskId));
   document.querySelectorAll('[data-mgredit]').forEach(b=>b.addEventListener('click', ()=>openEditStageModal(taskId, b.dataset.mgredit)));
+  let mgrTemplates = [];
+  loadFlowTemplates().then(list=>{
+    mgrTemplates = list;
+    const sel = document.getElementById('mgrTpl'); if(!sel) return;
+    sel.innerHTML = '<option value="">Aplicar plantilla de flujo…</option>' + list.map(t=>`<option value="${esc(t.id)}">${esc(t.name)} (${t.steps.length})</option>`).join('');
+  });
+  const tplSel = document.getElementById('mgrTpl'), tplApply = document.getElementById('mgrTplApply');
+  tplSel.addEventListener('change', ()=>{ tplApply.disabled = !tplSel.value; });
+  tplApply.addEventListener('click', async ()=>{
+    const tpl = mgrTemplates.find(t=>t.id===tplSel.value); if(!tpl) return;
+    if(!confirm(`Se agregarán ${tpl.steps.length} etapas al final de esta tarea. ¿Continuar?`)) return;
+    tplApply.disabled = true;
+    if(await applyTemplateToTask(taskId, tpl)) afterStageChange(taskId);
+    else tplApply.disabled = false;
+  });
+  const tplSave = document.getElementById('mgrTplSave');
+  if(tplSave) tplSave.addEventListener('click', async ()=>{
+    const name = prompt('Nombre de la plantilla:', task.title.slice(0,40));
+    if(!name || !name.trim()) return;
+    if(await saveFlowTemplate(name.trim(), (task.stages||[]).map(x=>({title:x.title, responsible:x.responsible})))) alert('Plantilla guardada. La verás al crear o editar tareas.');
+  });
 }
 function openEditStageModal(taskId, stageId){
   const task = tasks.find(x=>x.id===taskId);
@@ -4757,12 +4827,17 @@ function openTaskModal(){
       <button type="button" class="link-btn" id="toggleStagesBtn">+ Agregar etapas con responsables (opcional)</button>
       <div class="lead" style="margin-top:4px">Cada etapa la hace una persona distinta, en orden — nadie puede avanzar la siguiente hasta que la anterior esté lista.</div>
       <div id="stagesSection" style="display:none;margin-top:10px">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+          <select id="tplSelect" style="flex:1"><option value="">Usar una plantilla de flujo…</option></select>
+          <button type="button" class="btn small ghost" id="tplDel" title="Eliminar esta plantilla" style="display:none">🗑</button>
+        </div>
         <div id="stageChips" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
         <div style="display:flex;gap:6px">
           <input type="text" id="stageInput" placeholder="Nombre de la etapa (ej. Redactar borrador)" style="flex:1.4">
           <select id="stageResponsible" style="flex:1">${members.map(r=>`<option>${esc(r.name)}</option>`).join('')}</select>
           <button type="button" class="btn small" id="addStageBtn">Añadir</button>
         </div>
+        <button type="button" class="link-btn" id="tplSave" style="display:none;margin-top:8px">💾 Guardar estas etapas como plantilla</button>
       </div>
     </div>
     ${customFields.map(f=>`<div class="field"><label>${esc(f.name)}</label><input type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" id="cf_${f.id}"></div>`).join('')}
@@ -4819,6 +4894,7 @@ function openTaskModal(){
       pendingStages.splice(+b.dataset.rmstage, 1);
       renderStageChips();
     }));
+    const sv = document.getElementById('tplSave'); if(sv) sv.style.display = pendingStages.length? 'inline' : 'none';
   }
   document.getElementById('toggleStagesBtn').addEventListener('click', (e)=>{
     const section = document.getElementById('stagesSection');
@@ -4838,6 +4914,36 @@ function openTaskModal(){
     input.focus();
   }
   document.getElementById('addStageBtn').addEventListener('click', addStageFromInput);
+  let flowTpls = [];
+  function fillTplSelect(){
+    const sel = document.getElementById('tplSelect'); if(!sel) return;
+    sel.innerHTML = '<option value="">Usar una plantilla de flujo…</option>' + flowTpls.map(t=>`<option value="${esc(t.id)}">${esc(t.name)} (${t.steps.length} etapas)</option>`).join('');
+    document.getElementById('tplDel').style.display = 'none';
+  }
+  loadFlowTemplates().then(list=>{ flowTpls = list; fillTplSelect(); });
+  document.getElementById('tplSelect').addEventListener('change', ()=>{
+    const sel = document.getElementById('tplSelect');
+    const tpl = flowTpls.find(t=>t.id===sel.value);
+    document.getElementById('tplDel').style.display = (tpl && !tpl.base)? 'inline-flex' : 'none';
+    if(!tpl) return;
+    if(pendingStages.length && !confirm('Esto reemplaza las etapas que ya agregaste. ¿Continuar?')){ sel.value=''; return; }
+    const names = members.map(m=>m.name);
+    const fallback = document.getElementById('tAssignee').value || document.getElementById('stageResponsible').value || me.name;
+    pendingStages = tpl.steps.map(st=>({title:st.title, responsible: names.includes(st.responsible)? st.responsible : fallback}));
+    renderStageChips();
+  });
+  document.getElementById('tplDel').addEventListener('click', async ()=>{
+    const sel = document.getElementById('tplSelect');
+    const tpl = flowTpls.find(t=>t.id===sel.value); if(!tpl || tpl.base) return;
+    if(!confirm(`¿Eliminar la plantilla "${tpl.name}"?`)) return;
+    if(await deleteFlowTemplate(tpl.id)){ flowTpls = flowTpls.filter(t=>t.id!==tpl.id); fillTplSelect(); }
+  });
+  document.getElementById('tplSave').addEventListener('click', async ()=>{
+    if(!pendingStages.length) return;
+    const name = prompt('Nombre de la plantilla:');
+    if(!name || !name.trim()) return;
+    if(await saveFlowTemplate(name.trim(), pendingStages)){ flowTpls = await loadFlowTemplates(); fillTplSelect(); alert('Plantilla guardada.'); }
+  });
   document.getElementById('stageInput').addEventListener('keydown', e=>{
     if(e.key==='Enter'){ e.preventDefault(); addStageFromInput(); }
   });
