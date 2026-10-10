@@ -1,0 +1,17 @@
+name: Mantener Supabase despierto
+on:
+  schedule:
+    - cron: '17 */6 * * *'   # cada 6 horas
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Consultar la base de datos
+        run: |
+          code=$(curl -s -o /tmp/out.txt -w "%{http_code}" \
+            -H "apikey: sb_publishable_wBf87sTE6FH-6PnGKGFyAQ_aVWqj5H2" \
+            "https://iozmufovriszyhqhwzqa.supabase.co/rest/v1/kv_store?select=key&limit=1")
+          echo "HTTP $code"
+          head -c 200 /tmp/out.txt
+          [ "$code" = "200" ]
