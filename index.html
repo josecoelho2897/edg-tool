@@ -508,8 +508,49 @@
     .swatch{width:36px;height:36px;}
     .chip-opt{padding:8px 14px;}
   }
+  /* ---- Móvil: navegación simplificada ---- */
+  .rail-more, .mob-proj{display:none;}
+  .more-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0 14px;}
+  .more-tile{display:flex;align-items:center;gap:10px;padding:14px;border-radius:14px;background:var(--surface-2);border:1px solid var(--border);color:var(--text);font-weight:700;font-size:14px;cursor:pointer;text-align:left;}
+  .more-tile svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;flex:none;}
+  .more-row{display:flex;align-items:center;justify-content:space-between;width:100%;padding:14px 4px;border:0;border-top:1px solid var(--border);background:transparent;color:var(--text);font-size:14.5px;font-weight:600;cursor:pointer;text-align:left;}
+  .more-row .pill{background:var(--danger);color:#fff;border-radius:999px;font-size:11px;font-weight:800;padding:2px 8px;}
+  .proj-opt{display:flex;align-items:center;gap:10px;width:100%;padding:14px 12px;margin-bottom:8px;border-radius:12px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:15px;font-weight:600;cursor:pointer;text-align:left;}
+  .proj-opt.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset;}
+  @media (max-width:760px){
+    * {-webkit-tap-highlight-color:transparent;}
+    button, .btn, .side-item, .rail-btn, .card{touch-action:manipulation;}
+    .content{overscroll-behavior-y:contain;}
+    .rail-secondary, #globalSearchBtn, #notifBellBtn, .rail-me{display:none !important;}
+    .rail{overflow:visible;padding-left:0;padding-right:0;justify-content:space-around;}
+    .rail-btn{flex:1 1 0;min-width:0;padding:6px 2px;font-size:10px;position:relative;}
+    .rail-more{display:flex;}
+    .rail-btn.active{color:var(--accent);background:transparent;}
+    .rail-btn.active svg{stroke-width:2.3;}
+    .rail-more .notif-badge{top:4px;right:calc(50% - 22px);}
+    .mob-proj{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface);}
+    .mob-proj button{display:flex;align-items:center;gap:8px;max-width:100%;padding:7px 12px;border-radius:999px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;}
+    .mob-proj button span.t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:62vw;}
+    body:not([data-view="chat"]) .menu-toggle{display:none !important;}
+    .topbar{overflow-x:auto;overflow-y:hidden;flex-wrap:nowrap;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
+    .topbar::-webkit-scrollbar{display:none;}
+    .topbar > *{flex:0 0 auto;}
+    .topbar > .grow{flex:1 0 8px;}
+    .topbar h2{flex:0 1 auto;min-width:0;max-width:48vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .topbar .btn{white-space:nowrap;}
+    .topbar::after{content:'';flex:0 0 44px;}
+    .composer-box{flex-wrap:wrap;padding:8px;gap:6px 8px;}
+    .composer-box #attachBtn{order:0;flex:0 0 auto;}
+    .composer-box textarea{order:1;flex:1 1 0;min-width:0;}
+    .composer-box .emoji-quick{order:2;flex:1 1 auto;overflow-x:auto;display:flex;gap:2px;}
+    .composer-box .emoji-quick:has([data-fmt]){display:none;}
+    .composer-box #sendBtn, .composer-box #dmSendBtn{order:3;margin-left:auto;}
+    .composer-box textarea{flex-basis:calc(100% - 56px);}
+    .topbar .searchbox, .topbar .meta{display:none !important;}
+    .topbar h2{max-width:70vw;}
+  }
   @media (max-width:420px){
-    .rail-btn{font-size:9px;min-width:52px;}
+    .rail-btn{font-size:9px;min-width:0;}
     .searchbox{width:90px;font-size:12px;}
     .topbar h2{font-size:13px;}
   }
@@ -1185,7 +1226,7 @@ function renderStorageBlockedScreen(){
 }
 
 /* ================= BLINDAJE: versión, conexión, errores y copias automáticas ================= */
-const APP_VERSION = '2026-10-10.2';
+const APP_VERSION = '2026-10-10.7';
 const SNAP_KEEP = 8;
 const SNAP_KEYS = ['projects','tasks','goals','events','roster','channels'];
 function showAppBanner(id, text, btnLabel, onClick, danger){
@@ -1475,6 +1516,8 @@ async function updateNotifBadge(){
   const unread = mine.filter(n=>n.ts>notifLastOpened && n.actor!==me.name).length;
   if(unread>0){ badge.textContent = unread>99?'99+':unread; badge.style.display='flex'; }
   else { badge.style.display='none'; }
+  const mb = document.getElementById('moreBadge');
+  if(mb){ if(unread>0){ mb.textContent = unread>99?'99+':unread; mb.style.display='flex'; } else mb.style.display='none'; }
 }
 const NOTIF_ICONS = {mention:'💬', task:'📋', event:'📅'};
 async function openNotificationCenterModal(){
@@ -2428,6 +2471,7 @@ function openResetOtherModal(preselectUser){
 }
 
 /* ---------------- shell / nav ---------------- */
+const MOBILE_SECONDARY = ['goals','team','activity','cohorts'];
 const NAV = [
   {v:'dashboard', label:'Resumen', icon:'<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/>'},
   {v:'chat', label:'Chat', icon:'<path d="M4 4h16v12H8l-4 4V4z"/>'},
@@ -2453,21 +2497,29 @@ function renderShell(){
         <span id="notifBadge" class="notif-badge" style="display:none"></span>
       </button>
       ${NAV.map(n=>`
-        <button class="rail-btn ${view===n.v?'active':''}" data-nav="${n.v}">
+        <button class="rail-btn ${MOBILE_SECONDARY.includes(n.v)?'rail-secondary':''} ${view===n.v?'active':''}" data-nav="${n.v}">
           <svg viewBox="0 0 24 24">${n.icon}</svg>${n.label}
         </button>`).join('')}
+      <button class="rail-btn rail-more ${MOBILE_SECONDARY.includes(view)?'active':''}" id="moreBtn">
+        <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>Más
+        <span id="moreBadge" class="notif-badge" style="display:none"></span>
+      </button>
       <div class="rail-spacer"></div>
       ${me? `<div class="rail-me" style="background:${me.color}" title="${esc(me.name)} — clic para opciones de cuenta">${initials(me.name)}</div>`:''}
     </div>
     <div class="side" id="side"></div>
     <main>
       <div class="topbar" id="topbar"></div>
+      <div class="mob-proj" id="mobProj"></div>
       <div class="content content-fade-in" id="content"></div>
     </main>
   `;
   document.querySelectorAll('[data-nav]').forEach(b=>b.addEventListener('click', ()=>{
     view = b.dataset.nav; renderShell(); renderMain();
   }));
+  document.body.dataset.view = view;
+  document.getElementById('moreBtn').addEventListener('click', openMoreSheet);
+  renderMobileProjectChip();
   document.getElementById('globalSearchBtn').addEventListener('click', openGlobalSearchModal);
   document.getElementById('notifBellBtn').addEventListener('click', openNotificationCenterModal);
   updateNotifBadge();
@@ -2482,6 +2534,66 @@ function renderShell(){
   if(railMe) railMe.addEventListener('click', openAccountMenu);
   renderSideOnly();
 }
+
+function renderMobileProjectChip(){
+  const el = document.getElementById('mobProj');
+  if(!el) return;
+  const p = currentProject();
+  const multiple = myProjects().length>1;
+  el.innerHTML = `<button id="mobProjBtn" ${multiple?'':'disabled style="opacity:.85"'}><span>${p&&p.isGeneral?'🏠':'📁'}</span><span class="t">${esc(p?p.name:'Sin proyecto')}</span>${multiple?'<span style="opacity:.6">▾</span>':''}</button>`;
+  if(multiple) document.getElementById('mobProjBtn').addEventListener('click', openProjectSheet);
+}
+function openProjectSheet(){
+  const accessible = myProjects();
+  document.getElementById('modalBody').innerHTML = `
+    <h3>Cambiar de proyecto</h3>
+    ${accessible.map(p=>`<button class="proj-opt ${p.id===currentProjectId?'active':''}" data-proj="${p.id}"><span>${p.isGeneral?'🏠':'📁'}</span><span style="flex:1">${esc(p.name)}</span>${p.id===currentProjectId?'<span>✓</span>':''}</button>`).join('')}
+    ${isAdmin? `<button class="proj-opt" id="sheetNewProj"><span>＋</span><span>Nuevo proyecto</span></button>`:''}
+    <div class="modal-actions"><button class="btn ghost" id="psClose">Cerrar</button></div>`;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('psClose').addEventListener('click', closeModal);
+  document.querySelectorAll('[data-proj]').forEach(b=>b.addEventListener('click', async ()=>{ closeModal(); if(b.dataset.proj!==currentProjectId) await switchProject(b.dataset.proj); }));
+  const np = document.getElementById('sheetNewProj');
+  if(np) np.addEventListener('click', openNewProjectModal);
+}
+async function openMoreSheet(){
+  const navItems = NAV.filter(n=>MOBILE_SECONDARY.includes(n.v));
+  let unread = 0;
+  try{ const mine = await getMyNotifications(); unread = mine.filter(n=>n.ts>notifLastOpened && n.actor!==me.name).length; }catch(e){}
+  document.getElementById('modalBody').innerHTML = `
+    <h3>Más</h3>
+    <div class="more-grid">${navItems.map(n=>`<button class="more-tile" data-morenav="${n.v}"><svg viewBox="0 0 24 24">${n.icon}</svg>${n.label}</button>`).join('')}</div>
+    <button class="more-row" id="moreSearch"><span>🔎 Buscar en todo</span><span>›</span></button>
+    <button class="more-row" id="moreNotif"><span>🔔 Avisos</span>${unread? `<span class="pill">${unread>99?'99+':unread}</span>`:'<span>›</span>'}</button>
+    <button class="more-row" id="moreAccount"><span>👤 Mi cuenta${me? ' · '+esc(me.name):''}</span><span>›</span></button>
+    <div class="modal-actions"><button class="btn ghost" id="moreClose">Cerrar</button></div>`;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('moreClose').addEventListener('click', closeModal);
+  document.querySelectorAll('[data-morenav]').forEach(b=>b.addEventListener('click', ()=>{ closeModal(); view = b.dataset.morenav; renderShell(); renderMain(); }));
+  document.getElementById('moreSearch').addEventListener('click', openGlobalSearchModal);
+  document.getElementById('moreNotif').addEventListener('click', openNotificationCenterModal);
+  document.getElementById('moreAccount').addEventListener('click', openAccountMenu);
+}
+/* Gestos: deslizar desde el borde izquierdo abre el panel de canales (solo en Chat); tocar fuera lo cierra */
+(function setupMobileGestures(){
+  let sx=0, sy=0, tracking=false;
+  document.addEventListener('touchstart', e=>{
+    const t=e.touches[0]; sx=t.clientX; sy=t.clientY;
+    const side=document.getElementById('side');
+    tracking = !!side && window.innerWidth<=760 && ((document.body.dataset.view==='chat' && sx<24) || side.classList.contains('show'));
+  }, {passive:true});
+  document.addEventListener('touchend', e=>{
+    if(!tracking) return; tracking=false;
+    const t=e.changedTouches[0]; const dx=t.clientX-sx, dy=Math.abs(t.clientY-sy);
+    const side=document.getElementById('side'); if(!side || dy>60) return;
+    if(dx>70 && !side.classList.contains('show')) side.classList.add('show');
+    else if(dx<-70 && side.classList.contains('show')) side.classList.remove('show');
+  }, {passive:true});
+  document.addEventListener('click', e=>{
+    const side=document.getElementById('side');
+    if(side && side.classList.contains('show') && !e.target.closest('#side') && !e.target.closest('#menuToggle')) side.classList.remove('show');
+  });
+})();
 
 function projectSwitcherHtml(){
   const accessible = myProjects();
