@@ -1180,7 +1180,7 @@ function renderStorageBlockedScreen(){
 }
 
 /* ================= BLINDAJE: versión, conexión, errores y copias automáticas ================= */
-const APP_VERSION = '2026-10-09.3';
+const APP_VERSION = '2026-10-10.1';
 const SNAP_KEEP = 8;
 const SNAP_KEYS = ['projects','tasks','goals','events','roster','channels'];
 function showAppBanner(id, text, btnLabel, onClick, danger){
@@ -1247,6 +1247,23 @@ async function createSnapshot(label){
   if(!(await pSet('snapIndex', idx))) return {ok:false, reason:'No se pudo actualizar el índice'};
   return {ok:true, meta};
 }
+function checkBackupReminder(){
+  if(!isAdmin) return;
+  let last = 0;
+  try{ last = parseInt(localStorage.getItem('edg_last_export')||'0',10) || 0; }catch(e){}
+  let snoozed = 0;
+  try{ snoozed = parseInt(localStorage.getItem('edg_bk_snooze')||'0',10) || 0; }catch(e){}
+  if(Date.now()-last < 7*24*60*60*1000 || Date.now() < snoozed) return;
+  showAppBanner('bkBanner', last? 'Hace más de una semana que no descargas un respaldo.' : 'Aún no has descargado un respaldo completo.', 'Descargar ahora', ()=>exportAllData());
+  const el = document.getElementById('bkBanner');
+  if(el){
+    el.style.bottom = '64px'; el.style.top = 'auto';
+    const x = document.createElement('button');
+    x.textContent = 'Luego'; x.style.cssText = 'background:transparent;color:#fff;border:1px solid rgba(255,255,255,.6);border-radius:8px;padding:5px 10px;font-weight:700;cursor:pointer';
+    x.addEventListener('click', ()=>{ try{ localStorage.setItem('edg_bk_snooze', String(Date.now()+24*60*60*1000)); }catch(e){} hideAppBanner('bkBanner'); });
+    el.appendChild(x);
+  }
+}
 async function maybeAutoSnapshot(){
   if(!isAdmin || !sessionKey) return;
   try{
@@ -1309,6 +1326,7 @@ function startBackgroundLoops(){
   setInterval(checkNewVersion, 5*60*1000);
   document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) checkNewVersion(); });
   setTimeout(maybeAutoSnapshot, 20000);
+  setTimeout(checkBackupReminder, 30000);
   setInterval(maybeAutoSnapshot, 6*60*60*1000);
 }
 
@@ -2286,6 +2304,7 @@ async function openStorageModal(){
 
 async function exportAllData(){
   closeModal();
+  try{ localStorage.setItem('edg_last_export', String(Date.now())); hideAppBanner('bkBanner'); }catch(e){}
   const chs = await pGet('channels', channels);
   const msgsByChannel = {};
   for(const c of chs){
